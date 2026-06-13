@@ -16,8 +16,12 @@ dependencies:
   path_provider: ^2.1.1
   shared_preferences: ^2.2.2
   permission_handler: ^11.3.1
-  fvp: ^0.37.2
   path: ^1.9.0
+  # MPV-based video engine (replaces fvp for smoother seeking & playback)
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  video_player_media_kit: ^2.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

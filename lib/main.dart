@@ -8,11 +8,20 @@ import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
-import 'package:fvp/fvp.dart' as fvp;
+import 'package:media_kit/media_kit.dart';
+import 'package:video_player_media_kit/video_player_media_kit.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  fvp.registerWith();
+  // Initialize MPV-based engine (replaces fvp for smoother seeking & playback)
+  MediaKit.ensureInitialized();
+  VideoPlayerMediaKit.ensureInitialized(
+    android: true,
+    linux: true,
+    windows: true,
+    macOS: true,
+    iOS: true,
+  );
   // Setup to support landscape mode
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.landscapeLeft,
@@ -63,9 +72,14 @@ class _KidsTubeHomeState extends State<KidsTubeHome> {
   bool _isLoading = true;
   String? _errorMessage;
 
+  // Crash-proof: retry counter for auto-recovery
+  static const int _maxRetries = 2;
+  int _retryCount = 0;
+
   // Full screen control and thumbnail cache variables
   bool _areOverlaysVisible = true;
   Timer? _hideTimer;
+  static const int _maxThumbnailCacheSize = 50;
   final Map<String, Uint8List?> _thumbnailCache = {};
 
   @override
@@ -136,7 +150,7 @@ class _KidsTubeHomeState extends State<KidsTubeHome> {
           if (entity is File) {
             final ext = p.extension(entity.path).toLowerCase();
             // Check common video formats
-            if (['.mp4', '.mkv', '.mov', '.avi', '.flv', '.wmv'].contains(ext)) {
+            if (['.mp4', '.mkv', '.mov', '.avi', '.flv', '.wmv', '.webm', '.ts', '.m2ts', '.3gp', '.3g2', '.m4v', '.mpg', '.mpeg', '.vob', '.ogv', '.divx'].contains(ext)) {
               newVideos.add(VideoItem(path: entity.path, title: p.basename(entity.path)));
             }
           }
@@ -166,33 +180,109 @@ class _KidsTubeHomeState extends State<KidsTubeHome> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating));
   }
 
-  // Function to play video
-  Future<void> _playVideo(VideoItem video) async {
+  // Function to play video — with crash-proof auto-retry and auto-skip
+  Future<void> _playVideo(VideoItem video, {bool isRetry = false}) async {
+    // Reset retry counter for new video selections (not retries)
+    if (!isRetry) {
+      _retryCount = 0;
+    }
+
+    // Dispose old controller safely
     if (_controller != null) {
+      _controller!.removeListener(_onPlayerError);
       await _controller!.dispose();
       setState(() {
         _controller = null;
       });
+      // Small delay to let OS reclaim memory (helps low-end devices)
+      await Future.delayed(const Duration(milliseconds: 100));
     }
 
     final controller = VideoPlayerController.file(File(video.path));
     
     try {
       await controller.initialize();
+      
+      // Add runtime error listener for mid-playback crash detection
+      controller.addListener(_onPlayerError);
+
       setState(() {
         _currentVideo = video;
         _controller = controller;
         _errorMessage = null;
+        _retryCount = 0; // Reset on success
         _areOverlaysVisible = true; // Show overlay when new video starts playing
       });
       controller.play();
       controller.setLooping(true);
       _startHideTimer(); // Start 3-second timer
     } catch (e) {
-      setState(() {
-        _errorMessage = "Cannot play the video. It might be an unsupported format or permission issue.\nError: $e";
-      });
+      debugPrint('Video play error (attempt ${_retryCount + 1}/$_maxRetries): $e');
+      // Auto-dispose the failed controller
+      try { await controller.dispose(); } catch (_) {}
+
+      _retryCount++;
+
+      if (_retryCount < _maxRetries) {
+        // Auto-retry after a short delay
+        debugPrint('Auto-retrying video: ${video.title}...');
+        await Future.delayed(const Duration(seconds: 2));
+        if (mounted) {
+          _playVideo(video, isRetry: true);
+        }
+      } else {
+        // Max retries exhausted — auto-skip to next video
+        debugPrint('Max retries reached. Auto-skipping to next video.');
+        if (mounted) {
+          _playNextVideo(video);
+        }
+      }
     }
+  }
+
+  // Runtime error listener — detects crashes DURING playback and auto-recovers
+  void _onPlayerError() {
+    if (_controller == null) return;
+    if (_controller!.value.hasError) {
+      debugPrint('Runtime player error detected: ${_controller!.value.errorDescription}');
+      // Auto-recover: try replaying the same video
+      if (_currentVideo != null && _retryCount < _maxRetries) {
+        _retryCount++;
+        Future.delayed(const Duration(seconds: 1), () {
+          if (mounted && _currentVideo != null) {
+            _playVideo(_currentVideo!, isRetry: true);
+          }
+        });
+      } else if (_currentVideo != null) {
+        // Can't recover — skip to next
+        _playNextVideo(_currentVideo!);
+      }
+    }
+  }
+
+  // Auto-skip to the next video in the list
+  void _playNextVideo(VideoItem failedVideo) {
+    if (_videos.isEmpty) {
+      setState(() {
+        _errorMessage = 'This video could not be played. Please try another one.';
+      });
+      return;
+    }
+
+    final currentIndex = _videos.indexOf(failedVideo);
+    final nextIndex = (currentIndex + 1) % _videos.length;
+
+    // If we've looped all the way around, stop trying
+    if (nextIndex == currentIndex) {
+      setState(() {
+        _errorMessage = 'This video could not be played. Please try another one.';
+      });
+      return;
+    }
+
+    _showToast('Skipping to next video...');
+    _retryCount = 0;
+    _playVideo(_videos[nextIndex]);
   }
 
   void _toggleParentMode() {
@@ -292,6 +382,14 @@ class _KidsTubeHomeState extends State<KidsTubeHome> {
 
   // Thumbnail generation (using MethodChannel on Android and ffmpeg on Linux)
   Future<void> _generateThumbnails() async {
+    // Memory management: limit thumbnail cache size
+    if (_thumbnailCache.length > _maxThumbnailCacheSize) {
+      final keysToRemove = _thumbnailCache.keys.take(_thumbnailCache.length - _maxThumbnailCacheSize).toList();
+      for (var key in keysToRemove) {
+        _thumbnailCache.remove(key);
+      }
+    }
+
     for (var video in _videos) {
       if (!_thumbnailCache.containsKey(video.path)) {
         try {
@@ -358,6 +456,7 @@ class _KidsTubeHomeState extends State<KidsTubeHome> {
   @override
   void dispose() {
     _cancelHideTimer();
+    _controller?.removeListener(_onPlayerError);
     _controller?.dispose();
     super.dispose();
   }
