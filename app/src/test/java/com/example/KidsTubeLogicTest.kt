@@ -82,4 +82,55 @@ class KidsTubeLogicTest {
         assertEquals(32, hash1.length)
         assertEquals(32, hash2.length)
     }
+
+    @Test
+    fun testVlcMediaFileDetection() {
+        val nonMediaExtensions = setOf(
+            "txt", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv",
+            "json", "xml", "html", "htm", "css", "js", "ts", "kt", "java", "py", "c", "cpp", "h",
+            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "psd", "ai",
+            "apk", "aab", "zip", "rar", "7z", "tar", "gz", "bz2", "xz",
+            "exe", "bat", "cmd", "sh", "bin", "tmp", "bak", "log", "db", "db-journal",
+            "sqlite", "nomedia", "ini", "properties", "md"
+        )
+
+        fun isPotentialMedia(fileName: String?, mimeType: String? = null): Boolean {
+            if (mimeType?.startsWith("video/") == true || mimeType?.startsWith("audio/") == true) return true
+            if (fileName == null) return false
+            val ext = fileName.substringAfterLast('.', "").lowercase()
+            if (ext.isEmpty()) return false
+            return ext !in nonMediaExtensions
+        }
+
+        val supportedByVlc = listOf(
+            "cartoon.mp4", "rhyme.mkv", "song.webm", "clip.MOV", "show.AVI",
+            "video.3gp", "movie.ts", "cam.m2ts", "dvd.vob", "stream.flv",
+            "legacy.wmv", "raw.m4v", "audio_story.mp3", "track.ogg", "rhyme.flac"
+        )
+        val rejectedNonMedia = listOf(
+            "image.png", "doc.pdf", "script.py", "notes.txt", "app.apk", "data.json", "styles.css"
+        )
+
+        for (file in supportedByVlc) {
+            assertTrue("Expected VLC to accept $file", isPotentialMedia(file))
+        }
+
+        for (file in rejectedNonMedia) {
+            assertTrue("Expected non-media file $file to be filtered", !isPotentialMedia(file))
+        }
+    }
+
+    @Test
+    fun testTitleCleaning() {
+        fun cleanTitle(rawName: String): String {
+            return rawName.substringBeforeLast('.')
+                .replace('_', ' ')
+                .replace('-', ' ')
+                .trim()
+        }
+
+        assertEquals("Baby Shark Dance", cleanTitle("Baby_Shark_Dance.mp4"))
+        assertEquals("Peppa Pig Fun Episode", cleanTitle("Peppa-Pig-Fun-Episode.mkv"))
+        assertEquals("Tom and Jerry", cleanTitle("Tom_and_Jerry.webm"))
+    }
 }

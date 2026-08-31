@@ -167,21 +167,13 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
 
     fun onPlayerError(errorDescription: String) {
         val current = _uiState.value.currentVideo ?: return
-        val currentRetry = _uiState.value.retryAttempt
-
-        if (currentRetry < maxRetries) {
-            _uiState.update { it.copy(retryAttempt = currentRetry + 1) }
-            viewModelScope.launch {
-                delay(1500)
-                playVideo(current, isRetry = true, reshufflePlaylist = false)
-            }
-        } else {
-            // Auto skip silently to next (no toast for non-playable files)
-            _uiState.update {
-                it.copy(retryAttempt = 0)
-            }
-            playNextVideo()
+        // Mark failed item so it doesn't repeat in shuffle cycle
+        playedVideoIds.add(current.id)
+        _uiState.update {
+            it.copy(retryAttempt = 0, errorMessage = null)
         }
+        // MX Player behavior: Instantly and silently skip to the next playable video with zero toast or lag
+        playNextVideo()
     }
 
     fun onVideoFinished() {
@@ -427,13 +419,22 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
             repository.saveVideos(existing)
             val folders = existing.map { it.folderName }.distinct()
 
+            val msg = if (toAdd.isNotEmpty()) {
+                "Found ${toAdd.size} new video(s) on device!"
+            } else {
+                "All ${scanned.size} device videos are already in library"
+            }
+
             _uiState.update {
                 it.copy(
                     videos = existing,
                     folders = folders,
                     isLoading = false,
-                    toastMessage = "Found ${scanned.size} videos on device!"
+                    toastMessage = msg
                 )
+            }
+            if (_uiState.value.currentVideo == null && existing.isNotEmpty()) {
+                playVideo(existing.first())
             }
             viewModelScope.launch(Dispatchers.IO) {
                 ThumbnailHelper.preloadThumbnails(getApplication(), existing)

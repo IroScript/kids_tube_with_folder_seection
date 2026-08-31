@@ -1,8 +1,16 @@
 package com.example.ui.components
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,26 +27,25 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.HourglassBottom
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PermMedia
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -54,31 +61,28 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.model.VideoItem
 import com.example.ui.theme.KidsAmber
 import com.example.ui.theme.KidsBlue
 import com.example.ui.theme.KidsCyan
 import com.example.ui.theme.KidsGreen
 import com.example.ui.theme.KidsOrange
-import com.example.ui.theme.KidsPink
 import com.example.ui.theme.KidsPurple
 import com.example.ui.theme.KidsRed
 import com.example.ui.theme.KidsYellow
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -99,7 +103,55 @@ fun ParentControlsSheet(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val coroutineScope = rememberCoroutineScope()
+    val lazyListState = rememberLazyListState()
+
+    // Disable dragging dismiss and ensure dialog only closes on explicit Cross / Done button click
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { false }
+    )
+
+    // Runtime Permission Launcher for Storage & Media Videos
+    val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        arrayOf(
+            Manifest.permission.READ_MEDIA_VIDEO
+        )
+    } else {
+        arrayOf(
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val isGranted = perms.values.any { it } ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED) ||
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU &&
+             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED)
+
+        if (isGranted) {
+            onScanDevice()
+        } else {
+            Toast.makeText(context, "Storage permission is required to scan device videos", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun handleScanDeviceClick() {
+        val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        }
+
+        if (hasPermission) {
+            onScanDevice()
+        } else {
+            permissionLauncher.launch(permissionsToRequest)
+        }
+    }
 
     // Folder picker launcher (Storage Access Framework)
     val folderPicker = rememberLauncherForActivityResult(
@@ -118,7 +170,10 @@ fun ParentControlsSheet(
     }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            // Intentionally empty: Window will NOT dismiss when clicking outside in empty space.
+            // User MUST click the Cross [X] button or the Done button to close.
+        },
         sheetState = sheetState,
         containerColor = Color(0xFF161824),
         contentColor = Color.White,
@@ -127,10 +182,10 @@ fun ParentControlsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.9f)
-                .padding(20.dp)
+                .fillMaxHeight(0.95f)
+                .padding(horizontal = 20.dp, vertical = 12.dp)
         ) {
-            // Header
+            // Top Header with Close (X) Button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -167,319 +222,459 @@ fun ParentControlsSheet(
                     }
                 }
 
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.testTag("close_parent_sheet_button")
+                // Explicit Cross (X) Close Button
+                Surface(
+                    shape = CircleShape,
+                    color = KidsRed.copy(alpha = 0.15f),
+                    border = BorderStroke(1.dp, KidsRed.copy(alpha = 0.4f)),
+                    modifier = Modifier.size(38.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Close,
-                        contentDescription = "Close",
-                        tint = Color.White
-                    )
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("close_parent_sheet_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Close Dashboard",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(10.dp))
             HorizontalDivider(color = Color(0xFF2B2E42))
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            LazyColumn(
+            // Scroll Guidance Hint Banner
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color(0xFF1E2235),
+                border = BorderStroke(1.dp, KidsOrange.copy(alpha = 0.35f)),
                 modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .fillMaxWidth()
+                    .clickable {
+                        coroutineScope.launch {
+                            lazyListState.animateScrollToItem(1)
+                        }
+                    }
             ) {
-                // Section 1: Add Videos & Select Folders
-                item {
-                    Text(
-                        text = "📁 Video & Folder Sources",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = KidsYellow
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Button(
-                            onClick = { folderPicker.launch(null) },
-                            colors = ButtonDefaults.buttonColors(containerColor = KidsOrange),
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(54.dp)
-                                .testTag("pick_folder_button")
-                        ) {
-                            Icon(Icons.Filled.FolderOpen, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Select Folder", fontWeight = FontWeight.Bold)
-                        }
-
-                        Button(
-                            onClick = { filePicker.launch(arrayOf("video/*")) },
-                            colors = ButtonDefaults.buttonColors(containerColor = KidsBlue),
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(54.dp)
-                                .testTag("pick_files_button")
-                        ) {
-                            Icon(Icons.Filled.Add, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Add Videos", fontWeight = FontWeight.Bold)
-                        }
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = KidsYellow,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "👇 Scroll down to manage Video Library (${videos.size} videos loaded) & safe timers",
+                            color = KidsYellow,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onScanDevice,
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                                .testTag("scan_device_button"),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = KidsCyan)
-                        ) {
-                            Icon(Icons.Filled.PermMedia, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Scan Device", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        }
-
-                        OutlinedButton(
-                            onClick = onRestoreSamples,
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                                .testTag("restore_samples_button"),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = KidsAmber)
-                        ) {
-                            Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Sample Videos", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-
-                // Section 2: Screen Time & Playback Controls
-                item {
-                    Text(
-                        text = "⏱️ Safe Viewing & Screen Time",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = KidsYellow
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Card(
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF222536)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text("Auto-Play Next Video", fontWeight = FontWeight.Bold, color = Color.White)
-                                    Text("Continuous playback for kid playlists", fontSize = 11.sp, color = Color.Gray)
-                                }
-                                Switch(
-                                    checked = isAutoPlay,
-                                    onCheckedChange = { onToggleAutoPlay() },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color.White,
-                                        checkedTrackColor = KidsGreen
-                                    )
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(10.dp))
-                            HorizontalDivider(color = Color(0xFF33374E))
-                            Spacer(modifier = Modifier.height(10.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text("🔀 Random Shuffle Play (ডিফল্ট)", fontWeight = FontWeight.Bold, color = Color.White)
-                                    Text("ভিডিওগুলো এলোমেলো/র‍্যান্ডম ক্রমে চলবে (সিরিয়াল নয়)", fontSize = 11.sp, color = KidsYellow)
-                                }
-                                Switch(
-                                    checked = isShuffleMode,
-                                    onCheckedChange = { onToggleShuffle() },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color.White,
-                                        checkedTrackColor = KidsPurple
-                                    )
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-                            HorizontalDivider(color = Color(0xFF33374E))
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            Text("Screen Time Limit Timer:", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White)
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                val timerOptions = listOf(null to "Off", 15 to "15m", 30 to "30m", 45 to "45m", 60 to "60m")
-                                timerOptions.forEach { (mins, label) ->
-                                    val isSelected = screenTimerMinutes == mins
-                                    FilterChip(
-                                        selected = isSelected,
-                                        onClick = { onSetScreenTimer(mins) },
-                                        label = { Text(label, fontWeight = FontWeight.Bold, fontSize = 12.sp) },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = KidsAmber,
-                                            selectedLabelColor = Color.Black,
-                                            containerColor = Color(0xFF141520),
-                                            labelColor = Color.White
-                                        ),
-                                        shape = RoundedCornerShape(12.dp),
-                                        border = null,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Section 3: Manage Video Library
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = KidsOrange.copy(alpha = 0.2f),
+                        modifier = Modifier.padding(start = 4.dp)
                     ) {
                         Text(
-                            text = "🎬 Video Library (${videos.size})",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = KidsYellow
+                            text = "Scroll Down ⬇️",
+                            color = KidsOrange,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
-
-                        if (videos.isNotEmpty()) {
-                            TextButton(
-                                onClick = onClearAll,
-                                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = KidsRed),
-                                modifier = Modifier.testTag("clear_all_videos_button")
-                            ) {
-                                Icon(Icons.Filled.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Clear All", fontWeight = FontWeight.Bold)
-                            }
-                        }
                     }
                 }
+            }
 
-                if (videos.isEmpty()) {
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                LazyColumn(
+                    state = lazyListState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Landscape Side-by-Side Row for Section 1 (Sources) & Section 2 (Timers & Playback)
                     item {
-                        Card(
-                            shape = RoundedCornerShape(18.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF222536)),
-                            modifier = Modifier.fillMaxWidth()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(24.dp),
-                                contentAlignment = Alignment.Center
+                            // Column 1: Video & Folder Sources
+                            Card(
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF202334)),
+                                modifier = Modifier.weight(1f)
                             ) {
-                                Text(
-                                    "No videos loaded yet. Click 'Select Folder' or 'Sample Videos' above.",
-                                    color = Color.White.copy(alpha = 0.7f),
-                                    fontSize = 13.sp
-                                )
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Text(
+                                        text = "📁 Video & Folder Sources",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = KidsYellow
+                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Button(
+                                            onClick = { folderPicker.launch(null) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = KidsOrange),
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(48.dp)
+                                                .testTag("pick_folder_button")
+                                        ) {
+                                            Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Select Folder", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        }
+
+                                        Button(
+                                            onClick = { filePicker.launch(arrayOf("video/*")) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = KidsBlue),
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(48.dp)
+                                                .testTag("pick_files_button")
+                                        ) {
+                                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Add Videos", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = { handleScanDeviceClick() },
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(44.dp)
+                                                .testTag("scan_device_button"),
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = KidsCyan)
+                                        ) {
+                                            Icon(Icons.Filled.PermMedia, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Scan Device", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+
+                                        OutlinedButton(
+                                            onClick = onRestoreSamples,
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(44.dp)
+                                                .testTag("restore_samples_button"),
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = KidsAmber)
+                                        ) {
+                                            Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Sample Videos", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Column 2: Safe Viewing & Playback Controls
+                            Card(
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF202334)),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Text(
+                                        text = "⏱️ Safe Viewing & Controls",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        color = KidsYellow
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("Auto-Play Next Video", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White)
+                                            Text("Continuous playback for playlists", fontSize = 10.sp, color = Color.Gray)
+                                        }
+                                        Switch(
+                                            checked = isAutoPlay,
+                                            onCheckedChange = { onToggleAutoPlay() },
+                                            colors = SwitchDefaults.colors(
+                                                checkedThumbColor = Color.White,
+                                                checkedTrackColor = KidsGreen
+                                            )
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    HorizontalDivider(color = Color(0xFF33374E))
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("🔀 Random Shuffle", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White)
+                                            Text("ভিডিও র‍্যান্ডম ক্রমে চলবে", fontSize = 10.sp, color = KidsYellow)
+                                        }
+                                        Switch(
+                                            checked = isShuffleMode,
+                                            onCheckedChange = { onToggleShuffle() },
+                                            colors = SwitchDefaults.colors(
+                                                checkedThumbColor = Color.White,
+                                                checkedTrackColor = KidsPurple
+                                            )
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("Screen Time Limit Timer:", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color.White)
+                                    Spacer(modifier = Modifier.height(4.dp))
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        val timerOptions = listOf(null to "Off", 15 to "15m", 30 to "30m", 45 to "45m", 60 to "60m")
+                                        timerOptions.forEach { (mins, label) ->
+                                            val isSelected = screenTimerMinutes == mins
+                                            FilterChip(
+                                                selected = isSelected,
+                                                onClick = { onSetScreenTimer(mins) },
+                                                label = { Text(label, fontWeight = FontWeight.Bold, fontSize = 10.sp) },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    selectedContainerColor = KidsAmber,
+                                                    selectedLabelColor = Color.Black,
+                                                    containerColor = Color(0xFF141520),
+                                                    labelColor = Color.White
+                                                ),
+                                                shape = RoundedCornerShape(10.dp),
+                                                border = null,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                } else {
-                    items(videos, key = { it.id }) { video ->
-                        Card(
+
+                    // Section 3: Manage Video Library Header
+                    item {
+                        Surface(
                             shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF222536)),
+                            color = Color(0xFF25283C),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    modifier = Modifier.weight(1f),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
                                         imageVector = Icons.Filled.PlayCircleFilled,
                                         contentDescription = null,
-                                        tint = KidsOrange,
-                                        modifier = Modifier.size(28.dp)
+                                        tint = KidsYellow,
+                                        modifier = Modifier.size(22.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column {
-                                        Text(
-                                            text = video.title,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp,
-                                            color = Color.White,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "Folder: ${video.folderName}",
-                                            fontSize = 11.sp,
-                                            color = Color.White.copy(alpha = 0.6f)
-                                        )
-                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "🎬 Video Library (${videos.size} Videos)",
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 16.sp,
+                                        color = KidsYellow
+                                    )
                                 }
 
-                                IconButton(
-                                    onClick = { onRemoveVideo(video.id) },
-                                    modifier = Modifier.size(36.dp)
+                                if (videos.isNotEmpty()) {
+                                    TextButton(
+                                        onClick = onClearAll,
+                                        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = KidsRed),
+                                        modifier = Modifier.testTag("clear_all_videos_button")
+                                    ) {
+                                        Icon(Icons.Filled.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Clear All", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Section 3: Video List Items
+                    if (videos.isEmpty()) {
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF222536)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(24.dp),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Delete,
-                                        contentDescription = "Delete video",
-                                        tint = Color.White.copy(alpha = 0.5f),
-                                        modifier = Modifier.size(20.dp)
+                                    Text(
+                                        "No videos loaded yet. Click 'Select Folder', 'Scan Device' or 'Sample Videos' above.",
+                                        color = Color.White.copy(alpha = 0.7f),
+                                        fontSize = 13.sp,
+                                        textAlign = TextAlign.Center
                                     )
+                                }
+                            }
+                        }
+                    } else {
+                        items(videos, key = { it.id }) { video ->
+                            Card(
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF222536)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.PlayCircleFilled,
+                                            contentDescription = null,
+                                            tint = KidsOrange,
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column {
+                                            Text(
+                                                text = video.title,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = Color.White,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "Folder: ${video.folderName}",
+                                                fontSize = 11.sp,
+                                                color = Color.White.copy(alpha = 0.6f)
+                                            )
+                                        }
+                                    }
+
+                                    IconButton(
+                                        onClick = { onRemoveVideo(video.id) },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Delete,
+                                            contentDescription = "Delete video",
+                                            tint = Color.White.copy(alpha = 0.5f),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
+
+                // Floating Dynamic "Scroll Down" Indicator when list can scroll forward
+                AnimatedVisibility(
+                    visible = lazyListState.canScrollForward,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 8.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = KidsPurple,
+                        shadowElevation = 6.dp,
+                        modifier = Modifier.clickable {
+                            coroutineScope.launch {
+                                lazyListState.animateScrollToItem(lazyListState.layoutInfo.totalItemsCount - 1)
+                            }
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.ArrowDownward,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Scroll down for ${videos.size} videos ⬇️",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
+            // Done & Exit Button
             Button(
                 onClick = onDismiss,
                 colors = ButtonDefaults.buttonColors(containerColor = KidsRed),
-                shape = RoundedCornerShape(18.dp),
+                shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp)
+                    .height(48.dp)
                     .testTag("exit_parent_dashboard_button")
             ) {
-                Text("Done & Exit to Kids View", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("Done & Exit to Kids View", fontWeight = FontWeight.Bold, fontSize = 15.sp)
             }
         }
     }

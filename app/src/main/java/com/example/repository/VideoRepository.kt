@@ -1,11 +1,14 @@
 package com.example.repository
 
 import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import com.example.model.VideoItem
@@ -112,13 +115,22 @@ class VideoRepository(private val context: Context) {
                         )
                     )
                 }
-                return@withContext list
+                if (list.isNotEmpty()) {
+                    return@withContext list
+                }
             } catch (e: Exception) {
-                // fall through to default sample
+                // fall through to device scan / sample
             }
         }
 
-        // If not initialized yet, seed with sample videos
+        // By default, if no videos are selected, automatically scan & load all device videos from all directories
+        val deviceVideos = scanDeviceVideos()
+        if (deviceVideos.isNotEmpty()) {
+            saveVideos(deviceVideos)
+            return@withContext deviceVideos
+        }
+
+        // If no local videos exist anywhere on device storage, fallback to sample videos
         saveVideos(SAMPLE_VIDEOS)
         SAMPLE_VIDEOS
     }
@@ -147,6 +159,13 @@ class VideoRepository(private val context: Context) {
         val contentResolver: ContentResolver = context.contentResolver
 
         try {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (ignored: Exception) {}
+
             val rootDocId = DocumentsContract.getTreeDocumentId(treeUri)
             val rootFolderName = getDocumentDisplayName(contentResolver, treeUri) ?: "Root Folder"
 
@@ -182,10 +201,10 @@ class VideoRepository(private val context: Context) {
                             val nextPath = if (currentFolderPath.isEmpty()) displayName else "$currentFolderPath / $displayName"
                             scanDirectory(childId, nextPath)
                         } else {
-                            val isVideo = mimeType?.startsWith("video/") == true ||
-                                    isVideoExtension(displayName)
+                            val isMedia = mimeType?.startsWith("video/") == true ||
+                                isPotentialMediaFile(displayName, mimeType)
 
-                            if (isVideo) {
+                            if (isMedia) {
                                 val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
                                 val folderDisplay = if (currentFolderPath.isEmpty()) rootFolderName else currentFolderPath
                                 results.add(
@@ -215,6 +234,13 @@ class VideoRepository(private val context: Context) {
     suspend fun createVideoFromUri(uri: Uri, context: Context): VideoItem = withContext(Dispatchers.IO) {
         var displayName = "Video ${System.currentTimeMillis() % 1000}"
         try {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (ignored: Exception) {}
+
             val cursor = context.contentResolver.query(uri, null, null, null, null)
             cursor?.use {
                 if (it.moveToFirst()) {
@@ -238,11 +264,7 @@ class VideoRepository(private val context: Context) {
 
     suspend fun scanDeviceVideos(): List<VideoItem> = withContext(Dispatchers.IO) {
         val results = mutableListOf<VideoItem>()
-        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
-        } else {
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        }
+        val seenUris = mutableSetOf<String>()
 
         val projection = arrayOf(
             MediaStore.Video.Media._ID,
@@ -251,40 +273,97 @@ class VideoRepository(private val context: Context) {
             MediaStore.Video.Media.BUCKET_DISPLAY_NAME
         )
 
-        try {
-            val cursor = context.contentResolver.query(
-                collection,
-                projection,
-                null,
-                null,
-                "${MediaStore.Video.Media.DATE_ADDED} DESC"
-            )
+        // 1. Query MediaStore External & Internal
+        val collections = listOf(
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Video.Media.INTERNAL_CONTENT_URI
+        )
 
-            cursor?.use {
-                val idCol = it.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
-                val nameCol = it.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-                val durCol = it.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
-                val bucketCol = it.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+        for (collection in collections) {
+            try {
+                val cursor = context.contentResolver.query(
+                    collection,
+                    projection,
+                    null,
+                    null,
+                    "${MediaStore.Video.Media.DATE_ADDED} DESC"
+                )
 
-                while (it.moveToNext()) {
-                    val id = it.getLong(idCol)
-                    val name = it.getString(nameCol) ?: "Video $id"
-                    val duration = it.getLong(durCol)
-                    val bucketName = if (bucketCol >= 0) it.getString(bucketCol) ?: "Device" else "Device"
-                    val contentUri = Uri.withAppendedPath(collection, id.toString())
+                cursor?.use {
+                    val idCol = it.getColumnIndex(MediaStore.Video.Media._ID)
+                    val nameCol = it.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+                    val durCol = it.getColumnIndex(MediaStore.Video.Media.DURATION)
+                    val bucketCol = it.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
 
-                    results.add(
-                        VideoItem(
-                            id = "device_$id",
-                            title = cleanTitle(name),
-                            uriString = contentUri.toString(),
-                            folderName = bucketName,
-                            youtubeId = YoutubeIdHelper.extractYoutubeId(name),
-                            isSample = false,
-                            durationMs = duration
-                        )
-                    )
+                    while (it.moveToNext()) {
+                        val id = if (idCol >= 0) it.getLong(idCol) else -1L
+                        if (id == -1L) continue
+                        val name = if (nameCol >= 0) it.getString(nameCol) ?: "Video $id" else "Video $id"
+                        val duration = if (durCol >= 0) it.getLong(durCol) else 0L
+                        val bucketName = if (bucketCol >= 0) it.getString(bucketCol) ?: "Device" else "Device"
+                        val contentUri = ContentUris.withAppendedId(collection, id).toString()
+
+                        if (contentUri !in seenUris) {
+                            seenUris.add(contentUri)
+                            results.add(
+                                VideoItem(
+                                    id = "device_${id}_${results.size}",
+                                    title = cleanTitle(name),
+                                    uriString = contentUri,
+                                    folderName = bucketName.ifBlank { "Device" },
+                                    youtubeId = YoutubeIdHelper.extractYoutubeId(name),
+                                    isSample = false,
+                                    durationMs = duration
+                                )
+                            )
+                        }
+                    }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        // 2. Direct File System Scanner Fallback (Movies, Download, DCIM, Pictures, SDCard)
+        try {
+            val commonDirs = mutableListOf<File>()
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)?.let { commonDirs.add(it) }
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)?.let { commonDirs.add(it) }
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)?.let { commonDirs.add(it) }
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)?.let { commonDirs.add(it) }
+            try {
+                Environment.getExternalStorageDirectory()?.let { commonDirs.add(it) }
+            } catch (ignored: Exception) {}
+
+            fun scanDirFiles(dir: File, depth: Int = 0) {
+                if (depth > 3 || !dir.exists() || !dir.isDirectory || !dir.canRead()) return
+                val files = dir.listFiles() ?: return
+                for (file in files) {
+                    if (file.isDirectory && !file.name.startsWith(".")) {
+                        scanDirFiles(file, depth + 1)
+                    } else if (file.isFile && isPotentialMediaFile(file.name) && file.length() > 1024) {
+                        val fileUri = Uri.fromFile(file).toString()
+                        if (fileUri !in seenUris) {
+                            seenUris.add(fileUri)
+                            val parentName = file.parentFile?.name ?: "Storage"
+                            results.add(
+                                VideoItem(
+                                    id = "file_${file.name.hashCode()}_${results.size}",
+                                    title = cleanTitle(file.name),
+                                    uriString = fileUri,
+                                    folderName = parentName.ifBlank { "Device" },
+                                    youtubeId = YoutubeIdHelper.extractYoutubeId(file.name),
+                                    isSample = false,
+                                    durationMs = 0L
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            for (dir in commonDirs.distinctBy { it.absolutePath }) {
+                scanDirFiles(dir)
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -305,10 +384,23 @@ class VideoRepository(private val context: Context) {
         return null
     }
 
-    private fun isVideoExtension(fileName: String?): Boolean {
+    fun isPotentialMediaFile(fileName: String?, mimeType: String? = null): Boolean {
+        if (mimeType?.startsWith("video/") == true || mimeType?.startsWith("audio/") == true) return true
         if (fileName == null) return false
         val ext = fileName.substringAfterLast('.', "").lowercase()
-        return ext in listOf("mp4", "mkv", "mov", "avi", "flv", "wmv", "webm", "ts", "m2ts", "3gp", "3g2", "m4v", "mpg", "mpeg", "vob", "ogv", "divx")
+        if (ext.isEmpty()) return false
+
+        // Exclude only known non-media documents, archives, code, images, system files
+        // VLC media player engine natively decodes all audio/video formats and containers
+        val nonMediaExtensions = setOf(
+            "txt", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv",
+            "json", "xml", "html", "htm", "css", "js", "ts", "kt", "java", "py", "c", "cpp", "h",
+            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "psd", "ai",
+            "apk", "aab", "zip", "rar", "7z", "tar", "gz", "bz2", "xz",
+            "exe", "bat", "cmd", "sh", "bin", "tmp", "bak", "log", "db", "db-journal",
+            "sqlite", "nomedia", "ini", "properties", "md"
+        )
+        return ext !in nonMediaExtensions
     }
 
     private fun cleanTitle(rawName: String): String {

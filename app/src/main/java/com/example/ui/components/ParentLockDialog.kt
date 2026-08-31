@@ -48,6 +48,8 @@ import com.example.ui.theme.KidsOrange
 import com.example.ui.theme.KidsRed
 import com.example.ui.theme.KidsYellow
 
+import androidx.compose.ui.window.DialogProperties
+
 @Composable
 fun ParentLockDialog(
     question: String,
@@ -59,6 +61,7 @@ fun ParentLockDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        properties = DialogProperties(dismissOnClickOutside = false),
         shape = RoundedCornerShape(24.dp),
         containerColor = Color(0xFF1B1D2A),
         title = {
