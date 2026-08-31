@@ -622,7 +622,7 @@ fun ParentControlsSheet(
                 }
 
                 // Floating Dynamic "Scroll Down" Indicator when list can scroll forward
-                AnimatedVisibility(
+                androidx.compose.animation.AnimatedVisibility(
                     visible = lazyListState.canScrollForward,
                     enter = fadeIn(),
                     exit = fadeOut(),
