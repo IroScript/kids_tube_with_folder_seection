@@ -83,6 +83,7 @@ private val cardGradients = listOf(
 @Composable
 fun VideoShelf(
     videos: List<VideoItem>,
+    allVideos: List<VideoItem> = videos,
     currentVideo: VideoItem?,
     folders: List<String>,
     selectedFolder: String?,
@@ -107,7 +108,7 @@ fun VideoShelf(
                 FilterChip(
                     selected = selectedFolder == null,
                     onClick = { onSelectFolder(null) },
-                    label = { Text("All Videos (${videos.size})", fontWeight = FontWeight.Bold) },
+                    label = { Text("All Videos (${allVideos.size})", fontWeight = FontWeight.Bold) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = KidsRed,
                         selectedLabelColor = Color.White,
@@ -119,7 +120,7 @@ fun VideoShelf(
                 )
 
                 folders.forEach { folder ->
-                    val count = videos.count { it.folderName == folder || it.folderName.startsWith("$folder /") }
+                    val count = allVideos.count { it.folderName == folder || it.folderName.startsWith("$folder /") }
                     FilterChip(
                         selected = selectedFolder == folder,
                         onClick = { onSelectFolder(folder) },

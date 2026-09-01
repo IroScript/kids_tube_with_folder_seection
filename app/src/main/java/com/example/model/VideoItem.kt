@@ -10,5 +10,8 @@ data class VideoItem(
     val folderName: String = "All Videos",
     val youtubeId: String? = null,
     val isSample: Boolean = false,
-    val durationMs: Long = 0L
+    val durationMs: Long = 0L,
+    val mimeType: String? = null,
+    val sizeBytes: Long = 0L,
+    val dateAdded: Long = 0L
 )

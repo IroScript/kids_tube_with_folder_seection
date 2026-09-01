@@ -86,6 +86,7 @@ fun PlayerSurface(
                     }
                 }
                 MediaPlayer.Event.EncounteredError -> {
+                    android.util.Log.e("KidsTubePlayer", "VLC encountered error event for video: ${video?.title}")
                     onError("Playback error occurred in VLC engine")
                 }
             }
@@ -106,6 +107,7 @@ fun PlayerSurface(
     LaunchedEffect(video?.uriString, playTrigger) {
         if (video != null) {
             try {
+                android.util.Log.d("KidsTubePlayer", "Loading video: ${video.title} (URI: ${video.uriString})")
                 val uri = Uri.parse(video.uriString)
                 val media = Media(libVLC, uri).apply {
                     setHWDecoderEnabled(true, false)
@@ -116,6 +118,7 @@ fun PlayerSurface(
                 media.release()
                 mediaPlayer.play()
             } catch (e: Exception) {
+                android.util.Log.e("KidsTubePlayer", "Exception initializing media: ${e.message}", e)
                 onError(e.message ?: "Failed to load media in VLC")
             }
         } else {

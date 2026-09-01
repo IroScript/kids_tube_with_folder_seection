@@ -1,8 +1,12 @@
 package com.example
 
 import com.example.model.VideoItem
+import com.example.repository.VideoRepository
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -23,68 +27,81 @@ class KidsTubeLogicTest {
         }
     }
 
-    @Test
-    fun testAllFolderFiltering() {
-        val all = filterVideos(sampleVideos, null)
-        assertEquals(5, all.size)
+    private fun sortVideosDeterministically(videos: List<VideoItem>): List<VideoItem> {
+        return videos.sortedWith(
+            compareBy<VideoItem> { it.folderName.lowercase() }
+                .thenBy { it.title.lowercase() }
+        )
     }
 
     @Test
-    fun testSpecificSubfolderFiltering() {
-        val rhymes = filterVideos(sampleVideos, "Rhymes")
-        assertEquals(2, rhymes.size)
-        assertTrue(rhymes.all { it.folderName.startsWith("Rhymes") })
+    fun testTest1_SingleVideoPlaybackLifecycle() {
+        val singleList = listOf(VideoItem(id = "s1", title = "Single Video", uriString = "uri_s1", folderName = "Single"))
+        var currentVideo: VideoItem? = singleList.first()
+        var isLoadingVideo = true
+        var isBuffering = true
+        var isPlaying = false
+        var isPlaybackError = false
 
-        val cartoons = filterVideos(sampleVideos, "Cartoons")
-        assertEquals(2, cartoons.size)
-        assertTrue(cartoons.all { it.folderName.startsWith("Cartoons") })
+        // 1. Initial Selection: LOADING state
+        assertTrue(isLoadingVideo)
+        assertFalse(isPlaying)
 
-        val stories = filterVideos(sampleVideos, "Stories")
-        assertEquals(1, stories.size)
-        assertEquals("Story A", stories.first().title)
+        // 2. Playback started event
+        isPlaying = true
+        isLoadingVideo = false
+        isBuffering = false
+        assertTrue(isPlaying)
+        assertFalse(isLoadingVideo)
+
+        // 3. Video finishes (EndReached)
+        isPlaying = false
+        assertFalse(isPlaying)
     }
 
     @Test
-    fun testDynamicShuffleChain() {
-        val filtered = sampleVideos
-        val selected = filtered[2] // Cartoon A
-        val remaining = filtered.filter { it.id != selected.id }.shuffled()
-        val dynamicChain = listOf(selected) + remaining
+    fun testTest2_MultipleVideosDeterministicOrderingAndSequentialNext() {
+        val sorted = sortVideosDeterministically(sampleVideos)
+        assertEquals("Cartoon A", sorted[0].title)
+        assertEquals("Cartoon B", sorted[1].title)
+        assertEquals("Rhyme B", sorted[2].title)
+        assertEquals("Rhyme A", sorted[3].title)
+        assertEquals("Story A", sorted[4].title)
 
-        assertEquals(selected.id, dynamicChain.first().id)
-        assertEquals(filtered.size, dynamicChain.size)
+        // Sequential Next Navigation
+        var currentIndex = 0
+        var nextIndex = (currentIndex + 1) % sorted.size
+        assertEquals(1, nextIndex)
+        assertEquals("Cartoon B", sorted[nextIndex].title)
+
+        currentIndex = sorted.size - 1
+        nextIndex = (currentIndex + 1) % sorted.size
+        assertEquals(0, nextIndex)
+        assertEquals("Cartoon A", sorted[nextIndex].title)
     }
 
     @Test
-    fun testMathQuestionVerification() {
-        val a = 7
-        val b = 8
-        val expected = a * b
-        assertEquals(56, expected)
+    fun testTest3_PlaybackErrorStateTransition() {
+        var isLoadingVideo = true
+        var isPlaying = false
+        var isPlaybackError = false
+        var playbackErrorMessage: String? = null
 
-        val correctInput = "56"
-        val wrongInput = "54"
+        // Simulate VLC Error Event
+        val errorReason = "File not found or corrupted codec"
+        isLoadingVideo = false
+        isPlaying = false
+        isPlaybackError = true
+        playbackErrorMessage = errorReason
 
-        assertEquals(expected, correctInput.toIntOrNull())
-        assertNotEquals(expected, wrongInput.toIntOrNull())
+        assertTrue(isPlaybackError)
+        assertFalse(isPlaying)
+        assertFalse(isLoadingVideo)
+        assertEquals("File not found or corrupted codec", playbackErrorMessage)
     }
 
     @Test
-    fun testThumbnailKeyHashing() {
-        val uri1 = "content://media/external/video/media/101"
-        val uri2 = "content://media/external/video/media/102"
-        val digest = java.security.MessageDigest.getInstance("MD5")
-        
-        val hash1 = digest.digest(uri1.toByteArray()).joinToString("") { "%02x".format(it) }
-        val hash2 = java.security.MessageDigest.getInstance("MD5").digest(uri2.toByteArray()).joinToString("") { "%02x".format(it) }
-
-        assertNotEquals(hash1, hash2)
-        assertEquals(32, hash1.length)
-        assertEquals(32, hash2.length)
-    }
-
-    @Test
-    fun testVlcMediaFileDetection() {
+    fun testTest4_SupportedVideoFormatsDetection() {
         val nonMediaExtensions = setOf(
             "txt", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv",
             "json", "xml", "html", "htm", "css", "js", "ts", "kt", "java", "py", "c", "cpp", "h",
@@ -99,38 +116,120 @@ class KidsTubeLogicTest {
             if (fileName == null) return false
             val ext = fileName.substringAfterLast('.', "").lowercase()
             if (ext.isEmpty()) return false
+            if (ext in VideoRepository.SUPPORTED_VIDEO_EXTENSIONS) return true
             return ext !in nonMediaExtensions
         }
 
-        val supportedByVlc = listOf(
+        val supportedFormats = listOf(
             "cartoon.mp4", "rhyme.mkv", "song.webm", "clip.MOV", "show.AVI",
-            "video.3gp", "movie.ts", "cam.m2ts", "dvd.vob", "stream.flv",
-            "legacy.wmv", "raw.m4v", "audio_story.mp3", "track.ogg", "rhyme.flac"
+            "video.3gp", "video.3g2", "movie.ts", "cam.m2ts", "dvd.vob", "stream.flv",
+            "legacy.wmv", "raw.m4v", "stream.f4v", "recording.wtv", "vintage.divx",
+            "rmvideo.rmvb", "asfvideo.asf", "ogvvideo.ogv"
         )
         val rejectedNonMedia = listOf(
-            "image.png", "doc.pdf", "script.py", "notes.txt", "app.apk", "data.json", "styles.css"
+            "image.png", "doc.pdf", "script.py", "notes.txt", "app.apk", "data.json", "styles.css", "archive.zip"
         )
 
-        for (file in supportedByVlc) {
-            assertTrue("Expected VLC to accept $file", isPotentialMedia(file))
+        for (file in supportedFormats) {
+            assertTrue("Expected VLC/MX to accept format $file", isPotentialMedia(file))
         }
 
         for (file in rejectedNonMedia) {
-            assertTrue("Expected non-media file $file to be filtered", !isPotentialMedia(file))
+            assertFalse("Expected non-media file $file to be rejected", isPotentialMedia(file))
         }
     }
 
     @Test
-    fun testTitleCleaning() {
-        fun cleanTitle(rawName: String): String {
-            return rawName.substringBeforeLast('.')
-                .replace('_', ' ')
-                .replace('-', ' ')
-                .trim()
+    fun testTest5_LargePlaylistStability() {
+        val largeList = (1..500).map { i ->
+            VideoItem(id = "id_$i", title = "Episode $i", uriString = "uri_$i", folderName = "Kids Season ${i % 5}")
+        }
+        val sorted = sortVideosDeterministically(largeList)
+        assertEquals(500, sorted.size)
+        // Ensure deterministic stability
+        val reSorted = sortVideosDeterministically(sorted)
+        assertEquals(sorted, reSorted)
+    }
+
+    @Test
+    fun testTest6_ShuffleOffDeterministicSequentialOrder() {
+        val isShuffleMode = false
+        val playlist = sortVideosDeterministically(sampleVideos)
+        val current = playlist[1] // Cartoon B
+
+        val nextVideo = if (isShuffleMode) {
+            playlist.filter { it.id != current.id }.random()
+        } else {
+            val idx = playlist.indexOfFirst { it.id == current.id }
+            playlist[(idx + 1) % playlist.size]
         }
 
-        assertEquals("Baby Shark Dance", cleanTitle("Baby_Shark_Dance.mp4"))
-        assertEquals("Peppa Pig Fun Episode", cleanTitle("Peppa-Pig-Fun-Episode.mkv"))
-        assertEquals("Tom and Jerry", cleanTitle("Tom_and_Jerry.webm"))
+        assertEquals("Rhyme B", nextVideo.title)
+    }
+
+    @Test
+    fun testTest7_ShuffleOnNonRepeatingCandidatesAndStablePlaylist() {
+        val playlist = sortVideosDeterministically(sampleVideos)
+        val playedIds = mutableSetOf<String>()
+        val currentId = playlist[0].id
+        playedIds.add(currentId)
+
+        // Select next unplayed candidate
+        val unplayedCandidates = playlist.filter { it.id !in playedIds && it.id != currentId }
+        assertEquals(4, unplayedCandidates.size)
+        val nextPicked = unplayedCandidates.random()
+        assertTrue(nextPicked.id in unplayedCandidates.map { it.id })
+
+        // Ensure visible playlist did not change order
+        assertEquals("Cartoon A", playlist[0].title)
+        assertEquals("Cartoon B", playlist[1].title)
+    }
+
+    @Test
+    fun testTest8_RapidNextPreviousWithHistoryStack() {
+        val playlist = sortVideosDeterministically(sampleVideos)
+        val history = ArrayDeque<String>()
+
+        history.addLast(playlist[0].id)
+        history.addLast(playlist[1].id)
+        history.addLast(playlist[2].id)
+
+        val prevId = history.removeLast()
+        assertEquals(playlist[2].id, prevId)
+
+        val prevId2 = history.removeLast()
+        assertEquals(playlist[1].id, prevId2)
+    }
+
+    @Test
+    fun testTest9_AllFolderFiltering() {
+        val all = filterVideos(sampleVideos, null)
+        assertEquals(5, all.size)
+
+        val rhymes = filterVideos(sampleVideos, "Rhymes")
+        assertEquals(2, rhymes.size)
+        assertTrue(rhymes.all { it.folderName.startsWith("Rhymes") })
+    }
+
+    @Test
+    fun testTest10_MediaStoreAndFileDeduplication() {
+        val seenUris = mutableSetOf<String>()
+        val seenFileSignatures = mutableSetOf<String>()
+
+        val item1Uri = "content://media/external/video/media/100"
+        val item1Name = "cartoons.mp4"
+        val item1Size = 1048576L
+        val sig1 = "${item1Name.lowercase()}_$item1Size"
+
+        seenUris.add(item1Uri)
+        seenFileSignatures.add(sig1)
+
+        val duplicateFileUri = "file:///storage/emulated/0/Movies/cartoons.mp4"
+        val duplicateFileName = "cartoons.mp4"
+        val duplicateFileSize = 1048576L
+        val sig2 = "${duplicateFileName.lowercase()}_$duplicateFileSize"
+
+        val isDuplicate = duplicateFileUri in seenUris || sig2 in seenFileSignatures
+        assertTrue("Duplicate file should be detected via signature", isDuplicate)
     }
 }

@@ -168,6 +168,110 @@ fun KidsTubeScreen(
                 },
                 modifier = Modifier.fillMaxSize()
             )
+
+            // Playback Failure State Overlay (MX Player Parity: Clearly inform user and offer recovery)
+            if (uiState.isPlaybackError) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xEE0D0E17)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(24.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = KidsRed.copy(alpha = 0.2f),
+                            modifier = Modifier.size(80.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.VideocamOff,
+                                    contentDescription = "Playback Error",
+                                    tint = KidsRed,
+                                    modifier = Modifier.size(44.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Text(
+                            text = "Cannot Play Video",
+                            color = Color.White,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Text(
+                            text = uiState.currentVideo?.title ?: "Unknown video",
+                            color = KidsYellow,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text(
+                            text = uiState.playbackErrorMessage ?: "Format unsupported or source unavailable",
+                            color = Color.White.copy(alpha = 0.65f),
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(
+                                onClick = { viewModel.retryCurrentVideo() },
+                                colors = ButtonDefaults.buttonColors(containerColor = KidsBlue),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.height(44.dp)
+                            ) {
+                                Text("Retry 🔄", fontWeight = FontWeight.Bold)
+                            }
+
+                            Button(
+                                onClick = { viewModel.playNextVideo() },
+                                colors = ButtonDefaults.buttonColors(containerColor = KidsOrange),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.height(44.dp)
+                            ) {
+                                Text("Next Video ⏭️", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            } else if ((uiState.isLoadingVideo || uiState.isBuffering) && !uiState.isPlaying) {
+                // Explicit Video Loading / Buffering Indicator
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0x44000000)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(
+                            color = KidsYellow,
+                            strokeWidth = 4.dp,
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = if (uiState.isLoadingVideo) "Loading video..." else "Buffering...",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
         } else if (uiState.isScreenTimeUp) {
             // Screen Time Expired Visual Bedtime Screen
             ScreenTimeUpView(
@@ -178,17 +282,6 @@ fun KidsTubeScreen(
             EmptyLibraryView(
                 onOpenParentSettings = { viewModel.requestParentMode() },
                 onLoadSamples = { viewModel.restoreSampleVideos() }
-            )
-        }
-
-        // Buffering Indicator
-        if (uiState.isBuffering && !uiState.isScreenTimeUp) {
-            CircularProgressIndicator(
-                color = KidsYellow,
-                strokeWidth = 4.dp,
-                modifier = Modifier
-                    .size(60.dp)
-                    .align(Alignment.Center)
             )
         }
 
@@ -376,6 +469,7 @@ fun KidsTubeScreen(
                 // Horizontal Video Carousel Shelf (Directly underneath Seekbar)
                 VideoShelf(
                     videos = stablePlaylist,
+                    allVideos = uiState.videos,
                     currentVideo = stableCurrentVideo,
                     folders = stableFolders,
                     selectedFolder = stableSelectedFolder,

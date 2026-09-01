@@ -3,6 +3,7 @@ package com.example.viewmodel
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.model.VideoItem
@@ -20,12 +21,15 @@ import kotlin.random.Random
 
 data class KidsTubeUiState(
     val videos: List<VideoItem> = emptyList(),
+    val displayPlaylist: List<VideoItem> = emptyList(),
     val currentVideo: VideoItem? = null,
+    val isLoadingVideo: Boolean = false,
     val isPlaying: Boolean = false,
     val currentPositionMs: Long = 0L,
     val durationMs: Long = 0L,
     val isBuffering: Boolean = false,
-    val errorMessage: String? = null,
+    val isPlaybackError: Boolean = false,
+    val playbackErrorMessage: String? = null,
     val isLoading: Boolean = true,
     val isParentMode: Boolean = false,
     val showParentLockDialog: Boolean = false,
@@ -38,12 +42,11 @@ data class KidsTubeUiState(
     val screenTimerRemainingSeconds: Long? = null,
     val isScreenTimeUp: Boolean = false,
     val isAutoPlayNext: Boolean = true,
-    val isShuffleMode: Boolean = true,
+    val isShuffleMode: Boolean = false,
     val retryAttempt: Int = 0,
     val toastMessage: String? = null,
     val playTrigger: Long = 0L,
-    val seekRequestMs: Long? = null,
-    val displayPlaylist: List<VideoItem> = emptyList()
+    val seekRequestMs: Long? = null
 )
 
 class KidsTubeViewModel(application: Application) : AndroidViewModel(application) {
@@ -53,9 +56,8 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
     val uiState: StateFlow<KidsTubeUiState> = _uiState.asStateFlow()
 
     private var screenTimerJob: Job? = null
-    private val maxRetries = 2
 
-    // History for previous button in shuffle mode
+    // Navigation history stack for Previous button
     private val historyStack = ArrayDeque<String>()
     // Set of played video IDs in current shuffle cycle to prevent repeats
     private val playedVideoIds = mutableSetOf<String>()
@@ -66,21 +68,20 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
 
     fun loadVideos() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            _uiState.update { it.copy(isLoading = true, isPlaybackError = false, playbackErrorMessage = null) }
             val list = repository.getSavedVideos()
-            val folders = list.map { it.folderName }.distinct()
+            val folders = list.map { it.folderName }.distinct().sorted()
             val initialVideo = list.firstOrNull()
-
-            val initialPlaylist = if (list.isNotEmpty()) {
-                if (_uiState.value.isShuffleMode) list.shuffled() else list
-            } else emptyList()
 
             _uiState.update {
                 it.copy(
                     videos = list,
+                    displayPlaylist = list,
                     folders = folders,
                     currentVideo = initialVideo,
-                    displayPlaylist = initialPlaylist,
+                    isLoadingVideo = initialVideo != null,
+                    isBuffering = initialVideo != null,
+                    isPlaying = false,
                     isLoading = false
                 )
             }
@@ -91,10 +92,7 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun playVideo(video: VideoItem, isRetry: Boolean = false, recordHistory: Boolean = true, reshufflePlaylist: Boolean = true) {
-        if (!isRetry) {
-            _uiState.update { it.copy(retryAttempt = 0, errorMessage = null) }
-        }
+    fun playVideo(video: VideoItem, isRetry: Boolean = false, recordHistory: Boolean = true) {
         val current = _uiState.value.currentVideo
         if (recordHistory && current != null && current.id != video.id) {
             historyStack.addLast(current.id)
@@ -104,41 +102,37 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
         }
         playedVideoIds.add(video.id)
 
-        // Only reshuffle the display playlist when user manually selects a video (not during autoplay)
-        val newDisplayList = if (reshufflePlaylist) {
-            val filtered = getFilteredVideos(selectedFolder = _uiState.value.selectedFolder)
-            if (_uiState.value.isShuffleMode) {
-                val remaining = filtered.filter { it.id != video.id }.shuffled()
-                listOf(video) + remaining
-            } else {
-                val idx = filtered.indexOfFirst { it.id == video.id }
-                if (idx >= 0) {
-                    filtered.subList(idx, filtered.size) + filtered.subList(0, idx)
-                } else {
-                    filtered
-                }
-            }
-        } else {
-            // Keep existing playlist order stable, don't reshuffle
-            _uiState.value.displayPlaylist
-        }
+        // Maintain stable display playlist matching currently active folder
+        val filtered = getFilteredVideos(_uiState.value.selectedFolder)
 
         _uiState.update {
             it.copy(
                 currentVideo = video,
-                isPlaying = true,
+                displayPlaylist = filtered,
+                isLoadingVideo = true,
+                isBuffering = true,
+                isPlaying = false,
+                isPlaybackError = false,
+                playbackErrorMessage = null,
                 currentPositionMs = 0L,
                 playTrigger = System.currentTimeMillis(),
-                displayPlaylist = newDisplayList
+                retryAttempt = if (isRetry) it.retryAttempt + 1 else 0
             )
         }
+    }
+
+    fun retryCurrentVideo() {
+        val current = _uiState.value.currentVideo ?: return
+        playVideo(current, isRetry = true)
     }
 
     fun onPlayerPlaybackStateChanged(isPlaying: Boolean, isBuffering: Boolean) {
         _uiState.update {
             it.copy(
                 isPlaying = isPlaying,
-                isBuffering = isBuffering
+                isBuffering = isBuffering,
+                isLoadingVideo = if (isPlaying) false else it.isLoadingVideo,
+                isPlaybackError = if (isPlaying) false else it.isPlaybackError
             )
         }
     }
@@ -147,7 +141,8 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
         _uiState.update {
             it.copy(
                 currentPositionMs = currentPos,
-                durationMs = if (totalDuration > 0) totalDuration else it.durationMs
+                durationMs = if (totalDuration > 0) totalDuration else it.durationMs,
+                isLoadingVideo = false
             )
         }
     }
@@ -166,18 +161,26 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onPlayerError(errorDescription: String) {
-        val current = _uiState.value.currentVideo ?: return
-        // Mark failed item so it doesn't repeat in shuffle cycle
-        playedVideoIds.add(current.id)
+        val current = _uiState.value.currentVideo
+        Log.e(
+            "KidsTubePlayer",
+            "Playback Error: $errorDescription | Video: ${current?.title} | Uri: ${current?.uriString}"
+        )
+
         _uiState.update {
-            it.copy(retryAttempt = 0, errorMessage = null)
+            it.copy(
+                isLoadingVideo = false,
+                isPlaying = false,
+                isBuffering = false,
+                isPlaybackError = true,
+                playbackErrorMessage = errorDescription
+            )
         }
-        // MX Player behavior: Instantly and silently skip to the next playable video with zero toast or lag
-        playNextVideo()
     }
 
     fun onVideoFinished() {
         if (_uiState.value.isAutoPlayNext) {
+            // MX Player Behavior: Seamlessly & silently load next video without any intrusive toast
             playNextVideo()
         }
     }
@@ -189,24 +192,24 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
         val currentId = _uiState.value.currentVideo?.id
 
         if (_uiState.value.isShuffleMode) {
-            // SHUFFLE MODE: Pick non-repeating random video from filtered playlist
+            // SHUFFLE MODE: Pick non-repeating random video from candidates
             val unplayedCandidates = filtered.filter { it.id !in playedVideoIds && it.id != currentId }
             val nextVideo = when {
                 unplayedCandidates.isNotEmpty() -> unplayedCandidates.random()
                 filtered.size > 1 -> {
-                    // Reset played cycle, exclude only current video
+                    // Reset played cycle, exclude current video
                     playedVideoIds.clear()
                     currentId?.let { playedVideoIds.add(it) }
                     filtered.filter { it.id != currentId }.random()
                 }
                 else -> filtered.first()
             }
-            playVideo(nextVideo, reshufflePlaylist = false)
+            playVideo(nextVideo)
         } else {
-            // SEQUENTIAL MODE
+            // SEQUENTIAL MODE: Strict deterministic index navigation (MX Player standard)
             val currentIndex = filtered.indexOfFirst { it.id == currentId }
             val nextIndex = if (currentIndex >= 0 && currentIndex + 1 < filtered.size) currentIndex + 1 else 0
-            playVideo(filtered[nextIndex], reshufflePlaylist = false)
+            playVideo(filtered[nextIndex])
         }
     }
 
@@ -217,36 +220,30 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
         if (_uiState.value.isShuffleMode && historyStack.isNotEmpty()) {
             val previousId = historyStack.removeLast()
             val prevVideo = filtered.find { it.id == previousId } ?: filtered.first()
-            playVideo(prevVideo, recordHistory = false, reshufflePlaylist = false)
+            playVideo(prevVideo, recordHistory = false)
         } else {
             val currentIndex = filtered.indexOfFirst { it.id == _uiState.value.currentVideo?.id }
             val prevIndex = if (currentIndex > 0) currentIndex - 1 else filtered.size - 1
-            playVideo(filtered[prevIndex], recordHistory = false, reshufflePlaylist = false)
+            playVideo(filtered[prevIndex], recordHistory = false)
         }
     }
 
     fun toggleShuffle() {
         _uiState.update {
             val nextState = !it.isShuffleMode
-            val filtered = getFilteredVideos(it.selectedFolder)
-            val current = it.currentVideo
-            val newPlaylist = if (nextState) {
-                if (current != null) {
-                    listOf(current) + filtered.filter { v -> v.id != current.id }.shuffled()
-                } else filtered.shuffled()
-            } else {
-                filtered
-            }
             it.copy(
                 isShuffleMode = nextState,
-                displayPlaylist = newPlaylist,
-                toastMessage = if (nextState) "Random Shuffle Mode ON 🔀" else "Sequential Mode 🔁"
+                toastMessage = if (nextState) "Shuffle Mode ON 🔀" else "Sequential Mode 🔁"
             )
         }
     }
 
     fun togglePlayPause() {
         if (_uiState.value.isScreenTimeUp) return
+        if (_uiState.value.isPlaybackError) {
+            retryCurrentVideo()
+            return
+        }
         _uiState.update { it.copy(isPlaying = !it.isPlaying) }
     }
 
@@ -313,14 +310,10 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
         val current = _uiState.value.currentVideo
         val isCurrentInFiltered = current != null && filtered.any { it.id == current.id }
 
-        val newPlaylist = if (filtered.isNotEmpty()) {
-            if (_uiState.value.isShuffleMode) filtered.shuffled() else filtered
-        } else emptyList()
-
         _uiState.update {
             it.copy(
                 selectedFolder = folder,
-                displayPlaylist = newPlaylist
+                displayPlaylist = filtered
             )
         }
 
@@ -347,20 +340,28 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
             val existingUris = existing.map { it.uriString }.toSet()
             val toAdd = newVideos.filterNot { it.uriString in existingUris }
 
-            existing.addAll(0, toAdd)
-            repository.saveVideos(existing)
-            val folders = existing.map { it.folderName }.distinct()
+            existing.addAll(toAdd)
+            val sorted = repository.sortVideosDeterministically(existing)
+            repository.saveVideos(sorted)
+            val folders = sorted.map { it.folderName }.distinct().sorted()
+
+            val activePlaylist = if (_uiState.value.selectedFolder == null) {
+                sorted
+            } else {
+                sorted.filter { it.folderName == _uiState.value.selectedFolder || it.folderName.startsWith("${_uiState.value.selectedFolder} /") }
+            }
 
             _uiState.update {
                 it.copy(
-                    videos = existing,
+                    videos = sorted,
+                    displayPlaylist = activePlaylist,
                     folders = folders,
                     isLoading = false,
                     toastMessage = "${toAdd.size} videos added from folder!"
                 )
             }
             viewModelScope.launch(Dispatchers.IO) {
-                ThumbnailHelper.preloadThumbnails(getApplication(), existing)
+                ThumbnailHelper.preloadThumbnails(getApplication(), sorted)
             }
             if (toAdd.isNotEmpty() && _uiState.value.currentVideo == null) {
                 playVideo(toAdd.first())
@@ -376,20 +377,28 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
             val existingUris = existing.map { it.uriString }.toSet()
             val toAdd = newItems.filterNot { it.uriString in existingUris }
 
-            existing.addAll(0, toAdd)
-            repository.saveVideos(existing)
-            val folders = existing.map { it.folderName }.distinct()
+            existing.addAll(toAdd)
+            val sorted = repository.sortVideosDeterministically(existing)
+            repository.saveVideos(sorted)
+            val folders = sorted.map { it.folderName }.distinct().sorted()
+
+            val activePlaylist = if (_uiState.value.selectedFolder == null) {
+                sorted
+            } else {
+                sorted.filter { it.folderName == _uiState.value.selectedFolder || it.folderName.startsWith("${_uiState.value.selectedFolder} /") }
+            }
 
             _uiState.update {
                 it.copy(
-                    videos = existing,
+                    videos = sorted,
+                    displayPlaylist = activePlaylist,
                     folders = folders,
                     isLoading = false,
                     toastMessage = "${toAdd.size} video(s) added!"
                 )
             }
             viewModelScope.launch(Dispatchers.IO) {
-                ThumbnailHelper.preloadThumbnails(getApplication(), existing)
+                ThumbnailHelper.preloadThumbnails(getApplication(), sorted)
             }
             if (toAdd.isNotEmpty() && _uiState.value.currentVideo == null) {
                 playVideo(toAdd.first())
@@ -416,8 +425,15 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
             val toAdd = scanned.filterNot { it.uriString in existingUris }
 
             existing.addAll(toAdd)
-            repository.saveVideos(existing)
-            val folders = existing.map { it.folderName }.distinct()
+            val sorted = repository.sortVideosDeterministically(existing)
+            repository.saveVideos(sorted)
+            val folders = sorted.map { it.folderName }.distinct().sorted()
+
+            val activePlaylist = if (_uiState.value.selectedFolder == null) {
+                sorted
+            } else {
+                sorted.filter { it.folderName == _uiState.value.selectedFolder || it.folderName.startsWith("${_uiState.value.selectedFolder} /") }
+            }
 
             val msg = if (toAdd.isNotEmpty()) {
                 "Found ${toAdd.size} new video(s) on device!"
@@ -427,17 +443,18 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
 
             _uiState.update {
                 it.copy(
-                    videos = existing,
+                    videos = sorted,
+                    displayPlaylist = activePlaylist,
                     folders = folders,
                     isLoading = false,
                     toastMessage = msg
                 )
             }
-            if (_uiState.value.currentVideo == null && existing.isNotEmpty()) {
-                playVideo(existing.first())
+            if (_uiState.value.currentVideo == null && sorted.isNotEmpty()) {
+                playVideo(sorted.first())
             }
             viewModelScope.launch(Dispatchers.IO) {
-                ThumbnailHelper.preloadThumbnails(getApplication(), existing)
+                ThumbnailHelper.preloadThumbnails(getApplication(), sorted)
             }
         }
     }
@@ -450,21 +467,29 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
             val toAdd = samples.filterNot { it.uriString in existingUris }
 
             existing.addAll(toAdd)
-            repository.saveVideos(existing)
-            val folders = existing.map { it.folderName }.distinct()
+            val sorted = repository.sortVideosDeterministically(existing)
+            repository.saveVideos(sorted)
+            val folders = sorted.map { it.folderName }.distinct().sorted()
+
+            val activePlaylist = if (_uiState.value.selectedFolder == null) {
+                sorted
+            } else {
+                sorted.filter { it.folderName == _uiState.value.selectedFolder || it.folderName.startsWith("${_uiState.value.selectedFolder} /") }
+            }
 
             _uiState.update {
                 it.copy(
-                    videos = existing,
+                    videos = sorted,
+                    displayPlaylist = activePlaylist,
                     folders = folders,
                     toastMessage = "Added ${toAdd.size} kid sample videos!"
                 )
             }
             viewModelScope.launch(Dispatchers.IO) {
-                ThumbnailHelper.preloadThumbnails(getApplication(), existing)
+                ThumbnailHelper.preloadThumbnails(getApplication(), sorted)
             }
-            if (_uiState.value.currentVideo == null && existing.isNotEmpty()) {
-                playVideo(existing.first())
+            if (_uiState.value.currentVideo == null && sorted.isNotEmpty()) {
+                playVideo(sorted.first())
             }
         }
     }
@@ -472,17 +497,25 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
     fun removeVideo(videoId: String) {
         viewModelScope.launch {
             val updated = _uiState.value.videos.filterNot { it.id == videoId }
-            repository.saveVideos(updated)
-            val folders = updated.map { it.folderName }.distinct()
+            val sorted = repository.sortVideosDeterministically(updated)
+            repository.saveVideos(sorted)
+            val folders = sorted.map { it.folderName }.distinct().sorted()
 
             var newCurrent = _uiState.value.currentVideo
             if (newCurrent?.id == videoId) {
-                newCurrent = updated.firstOrNull()
+                newCurrent = sorted.firstOrNull()
+            }
+
+            val activePlaylist = if (_uiState.value.selectedFolder == null) {
+                sorted
+            } else {
+                sorted.filter { it.folderName == _uiState.value.selectedFolder || it.folderName.startsWith("${_uiState.value.selectedFolder} /") }
             }
 
             _uiState.update {
                 it.copy(
-                    videos = updated,
+                    videos = sorted,
+                    displayPlaylist = activePlaylist,
                     folders = folders,
                     currentVideo = newCurrent,
                     toastMessage = "Video removed"
@@ -497,6 +530,7 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
             _uiState.update {
                 it.copy(
                     videos = emptyList(),
+                    displayPlaylist = emptyList(),
                     folders = emptyList(),
                     currentVideo = null,
                     isPlaying = false,
