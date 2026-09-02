@@ -58,32 +58,31 @@ object UniversalMediaEngine {
     ): Pair<Media, ParcelFileDescriptor?> {
         val uri = Uri.parse(uriString)
         var pfd: ParcelFileDescriptor? = null
-        val media: Media
 
-        if (uri.scheme == "content") {
+        val media: Media = if (uri.scheme == "content") {
             try {
                 pfd = context.contentResolver.openFileDescriptor(uri, "r")
                 if (pfd != null) {
                     Log.d(TAG, "Opening content URI via native ParcelFileDescriptor: $uriString")
-                    media = Media(libVLC, pfd.fileDescriptor)
+                    Media(libVLC, pfd.fileDescriptor)
                 } else {
                     Log.d(TAG, "ParcelFileDescriptor is null, opening via Uri: $uriString")
-                    media = Media(libVLC, uri)
+                    Media(libVLC, uri)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Could not open FileDescriptor for $uriString, falling back to Uri: ${e.message}")
-                media = Media(libVLC, uri)
+                Media(libVLC, uri)
             }
         } else if (uri.scheme == "file") {
             val path = uri.path
             if (path != null && File(path).exists()) {
                 Log.d(TAG, "Opening local file path: $path")
-                media = Media(libVLC, path)
+                Media(libVLC, path)
             } else {
-                media = Media(libVLC, uri)
+                Media(libVLC, uri)
             }
         } else {
-            media = Media(libVLC, uri)
+            Media(libVLC, uri)
         }
 
         media.apply {
