@@ -104,19 +104,19 @@ class KidsTubeLogicTest {
     fun testTest4_SupportedVideoFormatsDetection() {
         val nonMediaExtensions = setOf(
             "txt", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv",
-            "json", "xml", "html", "htm", "css", "js", "ts", "kt", "java", "py", "c", "cpp", "h",
-            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "psd", "ai",
-            "apk", "aab", "zip", "rar", "7z", "tar", "gz", "bz2", "xz",
+            "json", "xml", "html", "htm", "css", "js", "jsx", "tsx", "kt", "java", "py", "c", "cpp", "h",
+            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "psd", "ai", "tiff", "tif",
+            "apk", "aab", "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "img",
             "exe", "bat", "cmd", "sh", "bin", "tmp", "bak", "log", "db", "db-journal",
-            "sqlite", "nomedia", "ini", "properties", "md"
+            "sqlite", "nomedia", "ini", "properties", "md", "yaml", "yml", "toml", "lock",
+            "ttf", "otf", "woff", "woff2", "eot", "fon"
         )
 
         fun isPotentialMedia(fileName: String?, mimeType: String? = null): Boolean {
             if (mimeType?.startsWith("video/") == true || mimeType?.startsWith("audio/") == true) return true
             if (fileName == null) return false
             val ext = fileName.substringAfterLast('.', "").lowercase()
-            if (ext.isEmpty()) return false
-            if (ext in VideoRepository.SUPPORTED_VIDEO_EXTENSIONS) return true
+            if (ext.isEmpty()) return true
             return ext !in nonMediaExtensions
         }
 
@@ -124,14 +124,15 @@ class KidsTubeLogicTest {
             "cartoon.mp4", "rhyme.mkv", "song.webm", "clip.MOV", "show.AVI",
             "video.3gp", "video.3g2", "movie.ts", "cam.m2ts", "dvd.vob", "stream.flv",
             "legacy.wmv", "raw.m4v", "stream.f4v", "recording.wtv", "vintage.divx",
-            "rmvideo.rmvb", "asfvideo.asf", "ogvvideo.ogv"
+            "rmvideo.rmvb", "asfvideo.asf", "ogvvideo.ogv", "stream.m3u8", "media.nut",
+            "video.vivo", "clip.roq", "game.bik", "clip.mxf", "audio.opus", "sound.flac"
         )
         val rejectedNonMedia = listOf(
             "image.png", "doc.pdf", "script.py", "notes.txt", "app.apk", "data.json", "styles.css", "archive.zip"
         )
 
         for (file in supportedFormats) {
-            assertTrue("Expected VLC/MX to accept format $file", isPotentialMedia(file))
+            assertTrue("Expected Universal VLC engine to accept format $file", isPotentialMedia(file))
         }
 
         for (file in rejectedNonMedia) {

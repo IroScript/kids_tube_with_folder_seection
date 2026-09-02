@@ -28,12 +28,6 @@ class VideoRepository(private val context: Context) {
         private const val KEY_VIDEOS = "kids_videos_json"
         private const val KEY_FIRST_RUN = "kids_first_run_initialized"
 
-        val SUPPORTED_VIDEO_EXTENSIONS = setOf(
-            "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "3gp", "3g2",
-            "ts", "m2ts", "mts", "vob", "mpg", "mpeg", "m4v", "divx", "rmvb",
-            "rm", "asf", "ogv", "f4v", "wtv", "drc", "gifv", "mng", "qt", "yuv"
-        )
-
         val SAMPLE_VIDEOS = listOf(
             VideoItem(
                 id = "sample_1",
@@ -421,6 +415,18 @@ class VideoRepository(private val context: Context) {
                             scanDirFiles(file, depth + 1)
                         }
                     } else if (file.isFile && isPotentialMediaFile(file.name) && file.length() > 512) {
+                        // If file extension is .ts, verify it is binary/MPEG-TS and not a TypeScript source code file
+                        if (file.name.endsWith(".ts", ignoreCase = true)) {
+                            try {
+                                val headerBuf = ByteArray(188)
+                                file.inputStream().use { it.read(headerBuf) }
+                                val headerStr = String(headerBuf, Charsets.UTF_8)
+                                if (headerStr.startsWith("import ") || headerStr.startsWith("export ") || headerStr.startsWith("/*") || headerStr.startsWith("//") || headerStr.startsWith("const ")) {
+                                    continue
+                                }
+                            } catch (ignored: Exception) {}
+                        }
+
                         val fileUri = Uri.fromFile(file).toString()
                         val signature = "${file.name.lowercase()}_${file.length()}"
                         if (fileUri !in seenUris && signature !in seenFileSignatures) {
@@ -471,18 +477,17 @@ class VideoRepository(private val context: Context) {
         if (mimeType?.startsWith("video/") == true || mimeType?.startsWith("audio/") == true) return true
         if (fileName == null) return false
         val ext = fileName.substringAfterLast('.', "").lowercase()
-        if (ext.isEmpty()) return false
+        if (ext.isEmpty()) return true
 
-        if (ext in SUPPORTED_VIDEO_EXTENSIONS) return true
-
-        // Exclude only known non-media documents, archives, code, images, system files
+        // Exclude only known non-media documents, archives, code, images, fonts, system files
         val nonMediaExtensions = setOf(
             "txt", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv",
-            "json", "xml", "html", "htm", "css", "js", "ts", "kt", "java", "py", "c", "cpp", "h",
-            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "psd", "ai",
-            "apk", "aab", "zip", "rar", "7z", "tar", "gz", "bz2", "xz",
+            "json", "xml", "html", "htm", "css", "js", "jsx", "tsx", "kt", "java", "py", "c", "cpp", "h",
+            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "psd", "ai", "tiff", "tif",
+            "apk", "aab", "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "img",
             "exe", "bat", "cmd", "sh", "bin", "tmp", "bak", "log", "db", "db-journal",
-            "sqlite", "nomedia", "ini", "properties", "md"
+            "sqlite", "nomedia", "ini", "properties", "md", "yaml", "yml", "toml", "lock",
+            "ttf", "otf", "woff", "woff2", "eot", "fon"
         )
         return ext !in nonMediaExtensions
     }

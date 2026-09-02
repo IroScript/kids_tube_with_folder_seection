@@ -1,17 +1,21 @@
 package com.example.ui.components
 
-import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.model.VideoItem
+import com.example.util.UniversalMediaEngine
 import kotlinx.coroutines.delay
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
@@ -34,22 +38,15 @@ fun PlayerSurface(
     val context = LocalContext.current
 
     val libVLC = remember {
-        try {
-            val options = arrayListOf(
-                "--no-video-title-show",
-                "--no-sub-autodetect-file",
-                "--audio-time-stretch",
-                "-vvv"
-            )
-            LibVLC(context, options)
-        } catch (e: Throwable) {
-            LibVLC(context)
-        }
+        UniversalMediaEngine.getOrCreateLibVLC(context)
     }
 
     val mediaPlayer = remember(libVLC) {
         MediaPlayer(libVLC)
     }
+
+    var currentPfd by remember { mutableStateOf<ParcelFileDescriptor?>(null) }
+    var hasRetriedSoftware by remember(video?.uriString, playTrigger) { mutableStateOf(false) }
 
     DisposableEffect(mediaPlayer) {
         val listener = MediaPlayer.EventListener { event ->
@@ -87,6 +84,21 @@ fun PlayerSurface(
                 }
                 MediaPlayer.Event.EncounteredError -> {
                     android.util.Log.e("KidsTubePlayer", "VLC encountered error event for video: ${video?.title}")
+                    if (!hasRetriedSoftware && video != null) {
+                        hasRetriedSoftware = true
+                        android.util.Log.w("KidsTubePlayer", "Hardware decode failed, automatically retrying with universal software decoder: ${video.title}")
+                        try {
+                            currentPfd?.close()
+                            val (media, pfd) = UniversalMediaEngine.createMedia(context, libVLC, video.uriString, forceSoftwareDecode = true)
+                            currentPfd = pfd
+                            mediaPlayer.media = media
+                            media.release()
+                            mediaPlayer.play()
+                            return@EventListener
+                        } catch (e: Exception) {
+                            android.util.Log.e("KidsTubePlayer", "Software decode retry failed: ${e.message}", e)
+                        }
+                    }
                     onError("Playback error occurred in VLC engine")
                 }
             }
@@ -99,7 +111,8 @@ fun PlayerSurface(
             mediaPlayer.stop()
             mediaPlayer.detachViews()
             mediaPlayer.release()
-            libVLC.release()
+            currentPfd?.close()
+            currentPfd = null
         }
     }
 
@@ -107,13 +120,10 @@ fun PlayerSurface(
     LaunchedEffect(video?.uriString, playTrigger) {
         if (video != null) {
             try {
-                android.util.Log.d("KidsTubePlayer", "Loading video: ${video.title} (URI: ${video.uriString})")
-                val uri = Uri.parse(video.uriString)
-                val media = Media(libVLC, uri).apply {
-                    setHWDecoderEnabled(true, false)
-                    addOption(":file-caching=150")
-                    addOption(":network-caching=500")
-                }
+                android.util.Log.d("KidsTubePlayer", "Loading video via UniversalMediaEngine: ${video.title} (URI: ${video.uriString})")
+                currentPfd?.close()
+                val (media, pfd) = UniversalMediaEngine.createMedia(context, libVLC, video.uriString, forceSoftwareDecode = false)
+                currentPfd = pfd
                 mediaPlayer.media = media
                 media.release()
                 mediaPlayer.play()
@@ -122,6 +132,8 @@ fun PlayerSurface(
                 onError(e.message ?: "Failed to load media in VLC")
             }
         } else {
+            currentPfd?.close()
+            currentPfd = null
             mediaPlayer.stop()
         }
     }
