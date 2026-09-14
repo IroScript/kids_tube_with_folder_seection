@@ -92,7 +92,20 @@ jobs:
       - name: Build Debug APK
         if: "${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_type == 'debug' || github.event.inputs.build_type == 'both' }}"
         run: |
-          gradle :app:assembleDebug --stacktrace --no-daemon -x test -x lint
+          set -o pipefail
+          gradle :app:assembleDebug --stacktrace --no-daemon -x test -x lint 2>&1 | tee build_debug.log || {
+            ERR_MSG=$(tail -n 40 build_debug.log | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=GradleBuildFailure::$ERR_MSG"
+            exit 1
+          }
+
+      - name: Upload Debug Build Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-build-log
+          path: build_debug.log
+          if-no-files-found: ignore
 
       - name: Build Release APK
         if: "${{ (github.event_name == 'workflow_dispatch' && (github.event.inputs.build_type == 'release' || github.event.inputs.build_type == 'both')) || startsWith(github.ref, 'refs/tags/') }}"
