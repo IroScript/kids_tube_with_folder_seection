@@ -397,7 +397,7 @@ class VideoRepository(private val context: Context) {
         // 3. Scan directory tree recursively
         val discoveredEntities = mutableListOf<VideoEntity>()
 
-        fun scanDirectory(docId: String, currentFolderPath: String) {
+        suspend fun scanDirectory(docId: String, currentFolderPath: String) {
             val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
             val cursor: Cursor? = try {
                 contentResolver.query(
