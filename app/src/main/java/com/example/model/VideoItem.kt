@@ -13,5 +13,7 @@ data class VideoItem(
     val durationMs: Long = 0L,
     val mimeType: String? = null,
     val sizeBytes: Long = 0L,
-    val dateAdded: Long = 0L
+    val dateAdded: Long = 0L,
+    val playbackPositionMs: Long = 0L,
+    val isCompleted: Boolean = false
 )

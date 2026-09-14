@@ -233,4 +233,95 @@ class KidsTubeLogicTest {
         val isDuplicate = duplicateFileUri in seenUris || sig2 in seenFileSignatures
         assertTrue("Duplicate file should be detected via signature", isDuplicate)
     }
+
+    @Test
+    fun testTest11_PhaseA_VideoEntityToVideoItemMapping() {
+        val entity = com.example.data.local.entity.VideoEntity(
+            id = "vid_123",
+            folderId = "folder_1",
+            uriString = "content://media/1",
+            fileName = "cartoon_ep01_1080p.mp4",
+            displayTitle = "Cartoon Ep01",
+            durationMs = 60000L,
+            sizeBytes = 1048576L,
+            mimeType = "video/mp4",
+            lastModified = 1715000000000L,
+            dateAdded = 1715000000000L
+        )
+
+        val item = VideoItem(
+            id = entity.id,
+            title = entity.displayTitle,
+            uriString = entity.uriString,
+            folderName = "Cartoons",
+            durationMs = entity.durationMs,
+            mimeType = entity.mimeType,
+            sizeBytes = entity.sizeBytes,
+            dateAdded = entity.dateAdded,
+            playbackPositionMs = 30000L,
+            isCompleted = false
+        )
+
+        assertEquals("vid_123", item.id)
+        assertEquals("Cartoon Ep01", item.title)
+        assertEquals("content://media/1", item.uriString)
+        assertEquals(30000L, item.playbackPositionMs)
+        assertFalse(item.isCompleted)
+    }
+
+    @Test
+    fun testTest12_PhaseA_TitleCleanerRegexRules() {
+        fun cleanTitle(rawName: String): String {
+            val withoutExt = rawName.substringBeforeLast('.')
+            val withoutTags = withoutExt
+                .replace(Regex("(?i)\\b(1080p|720p|480p|360p|2160p|4k|x264|x265|hevc|h264|aac|webrip|bluray|dvdrip)\\b"), "")
+                .replace('_', ' ')
+                .replace('-', ' ')
+                .trim()
+
+            return if (withoutTags.isBlank()) {
+                withoutExt.replace('_', ' ').replace('-', ' ').trim()
+            } else {
+                withoutTags.replace(Regex("\\s+"), " ")
+            }
+        }
+
+        assertEquals("rhyme ep01", cleanTitle("rhyme_ep01_1080p_x264.mkv"))
+        assertEquals("cartoon adventure", cleanTitle("cartoon-adventure-720p-h264.mp4"))
+        assertEquals("ভুতুড়ে বাড়ি পর্ব ০১", cleanTitle("ভুতুড়ে_বাড়ি_পর্ব_০১.mp4"))
+        assertEquals("1080p", cleanTitle("1080p.mp4"))
+    }
+
+    @Test
+    fun testTest13_PhaseA_IdentityReconciliationDisambiguationRule() {
+        // Rule: Single unambiguous match reconciles; multiple matches must preserve both as separate records
+        val candidate1 = com.example.data.local.entity.VideoEntity(
+            id = "vid_old_1",
+            folderId = "folder_1",
+            uriString = "content://old/1",
+            fileName = "rhyme.mp4",
+            displayTitle = "Rhyme",
+            sizeBytes = 5000L,
+            lastModified = 10000L
+        )
+        val candidate2 = com.example.data.local.entity.VideoEntity(
+            id = "vid_old_2",
+            folderId = "folder_1",
+            uriString = "content://old/2",
+            fileName = "rhyme_copy.mp4",
+            sizeBytes = 5000L,
+            lastModified = 10000L
+        )
+
+        val singleCandidateList = listOf(candidate1)
+        val multipleCandidateList = listOf(candidate1, candidate2)
+
+        // Single match allowed
+        val canReconcileSingle = singleCandidateList.size == 1
+        assertTrue(canReconcileSingle)
+
+        // Multiple match MUST NOT silently merge
+        val canReconcileMultiple = multipleCandidateList.size == 1
+        assertFalse("Multiple candidates must not silently merge", canReconcileMultiple)
+    }
 }

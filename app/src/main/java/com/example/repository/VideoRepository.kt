@@ -11,9 +11,16 @@ import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.util.Log
+import com.example.data.local.KidsTubeDatabase
+import com.example.data.local.entity.PlaybackProgressEntity
+import com.example.data.local.entity.TrackedFolderEntity
+import com.example.data.local.entity.VideoEntity
+import com.example.data.local.entity.WatchHistoryEntity
 import com.example.model.VideoItem
 import com.example.util.YoutubeIdHelper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,9 +31,17 @@ class VideoRepository(private val context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("kids_tube_prefs", Context.MODE_PRIVATE)
 
+    private val database: KidsTubeDatabase = KidsTubeDatabase.getInstance(context)
+    private val trackedFolderDao = database.trackedFolderDao()
+    private val videoDao = database.videoDao()
+    private val playbackProgressDao = database.playbackProgressDao()
+    private val watchHistoryDao = database.watchHistoryDao()
+
     companion object {
         private const val KEY_VIDEOS = "kids_videos_json"
         private const val KEY_FIRST_RUN = "kids_first_run_initialized"
+        private const val KEY_ROOM_MIGRATED = "kids_room_migrated_v1"
+        private const val KEY_VIDEOS_BACKUP = "kids_videos_json_backup"
 
         val SAMPLE_VIDEOS = listOf(
             VideoItem(
@@ -95,9 +110,136 @@ class VideoRepository(private val context: Context) {
         )
     }
 
-    suspend fun getSavedVideos(): List<VideoItem> = withContext(Dispatchers.IO) {
+    /**
+     * Safe Migration Flow:
+     * SharedPreferences JSON -> Parse -> Room Transaction -> Verify -> Marker -> Retain Backup
+     * Does NOT delete original KEY_VIDEOS in Phase A.
+     */
+    private suspend fun ensureRoomMigrated() = withContext(Dispatchers.IO) {
+        if (prefs.getBoolean(KEY_ROOM_MIGRATED, false)) {
+            return@withContext
+        }
+
         val jsonString = prefs.getString(KEY_VIDEOS, null)
-        if (jsonString != null) {
+        if (jsonString.isNullOrBlank()) {
+            prefs.edit().putBoolean(KEY_ROOM_MIGRATED, true).apply()
+            return@withContext
+        }
+
+        try {
+            val array = JSONArray(jsonString)
+            val migratedItems = mutableListOf<VideoItem>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                migratedItems.add(
+                    VideoItem(
+                        id = obj.getString("id"),
+                        title = obj.getString("title"),
+                        uriString = obj.getString("uriString"),
+                        folderName = obj.optString("folderName", "All Videos"),
+                        youtubeId = if (obj.has("youtubeId")) obj.getString("youtubeId") else null,
+                        isSample = obj.optBoolean("isSample", false),
+                        durationMs = obj.optLong("durationMs", 0L),
+                        mimeType = if (obj.has("mimeType")) obj.getString("mimeType") else null,
+                        sizeBytes = obj.optLong("sizeBytes", 0L),
+                        dateAdded = obj.optLong("dateAdded", System.currentTimeMillis()),
+                        playbackPositionMs = 0L,
+                        isCompleted = false
+                    )
+                )
+            }
+
+            if (migratedItems.isNotEmpty()) {
+                // Register TrackedFolder entities to satisfy foreign key constraints
+                val folderNames = migratedItems.map { it.folderName.ifBlank { "All Videos" } }.distinct()
+                val folderMap = mutableMapOf<String, String>()
+
+                for (fName in folderNames) {
+                    val folderId = "folder_" + Math.abs(fName.hashCode())
+                    val existing = trackedFolderDao.getFolderById(folderId)
+                    if (existing == null) {
+                        val treeUri = "migrated://folder/" + Math.abs(fName.hashCode())
+                        val folderEntity = TrackedFolderEntity(
+                            id = folderId,
+                            treeUriString = treeUri,
+                            displayName = fName,
+                            dateAdded = System.currentTimeMillis(),
+                            lastScanned = System.currentTimeMillis(),
+                            isEnabled = true,
+                            videoCount = migratedItems.count { it.folderName == fName }
+                        )
+                        trackedFolderDao.insertOrUpdate(folderEntity)
+                    }
+                    folderMap[fName] = folderId
+                }
+
+                val entities = migratedItems.map { item ->
+                    val fId = folderMap[item.folderName.ifBlank { "All Videos" }] ?: "folder_default"
+                    VideoEntity(
+                        id = item.id,
+                        folderId = fId,
+                        uriString = item.uriString,
+                        fileName = item.title,
+                        displayTitle = item.title,
+                        durationMs = item.durationMs,
+                        sizeBytes = item.sizeBytes,
+                        mimeType = item.mimeType,
+                        lastModified = item.dateAdded,
+                        dateAdded = item.dateAdded,
+                        youtubeId = item.youtubeId,
+                        isSample = item.isSample
+                    )
+                }
+
+                videoDao.insertOrUpdateAll(entities)
+
+                val count = videoDao.getVideoCount()
+                if (count >= migratedItems.size) {
+                    prefs.edit()
+                        .putString(KEY_VIDEOS_BACKUP, jsonString)
+                        .putBoolean(KEY_ROOM_MIGRATED, true)
+                        .apply()
+                    Log.d("VideoRepository", "Successfully migrated ${migratedItems.size} videos from SharedPreferences to Room DB.")
+                }
+            } else {
+                prefs.edit().putBoolean(KEY_ROOM_MIGRATED, true).apply()
+            }
+        } catch (e: Exception) {
+            Log.e("VideoRepository", "Migration to Room failed; retaining SharedPreferences: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Primary Caller-Facing API: Returns indexed videos with folder & playback details from Room DB.
+     * Guaranteed zero automatic whole-device scans and zero remote sample injection on fresh launch.
+     */
+    suspend fun getSavedVideos(): List<VideoItem> = withContext(Dispatchers.IO) {
+        ensureRoomMigrated()
+
+        val detailsList = videoDao.getAllVideosWithDetails()
+        if (detailsList.isNotEmpty()) {
+            val mapped = detailsList.map { details ->
+                VideoItem(
+                    id = details.id,
+                    title = details.displayTitle.ifBlank { details.fileName },
+                    uriString = details.uriString,
+                    folderName = details.folderDisplayName ?: "All Videos",
+                    youtubeId = details.youtubeId,
+                    isSample = details.isSample,
+                    durationMs = details.durationMs,
+                    mimeType = details.mimeType,
+                    sizeBytes = details.sizeBytes,
+                    dateAdded = details.dateAdded,
+                    playbackPositionMs = details.playbackPositionMs ?: 0L,
+                    isCompleted = details.isCompleted ?: false
+                )
+            }
+            return@withContext sortVideosDeterministically(mapped)
+        }
+
+        // Check fallback if SharedPreferences has unmigrated items
+        val jsonString = prefs.getString(KEY_VIDEOS, null)
+        if (!jsonString.isNullOrBlank()) {
             try {
                 val array = JSONArray(jsonString)
                 val list = mutableListOf<VideoItem>()
@@ -108,7 +250,7 @@ class VideoRepository(private val context: Context) {
                             id = obj.getString("id"),
                             title = obj.getString("title"),
                             uriString = obj.getString("uriString"),
-                            folderName = obj.optString("folderName", "Default"),
+                            folderName = obj.optString("folderName", "All Videos"),
                             youtubeId = if (obj.has("youtubeId")) obj.getString("youtubeId") else null,
                             isSample = obj.optBoolean("isSample", false),
                             durationMs = obj.optLong("durationMs", 0L),
@@ -119,66 +261,146 @@ class VideoRepository(private val context: Context) {
                     )
                 }
                 if (list.isNotEmpty()) {
+                    saveVideos(list)
                     return@withContext sortVideosDeterministically(list)
                 }
-            } catch (e: Exception) {
-                // fall through to device scan / sample
-            }
+            } catch (ignored: Exception) {}
         }
 
-        // By default, if no videos are saved, automatically scan & load all device videos from all directories
-        val deviceVideos = scanDeviceVideos()
-        if (deviceVideos.isNotEmpty()) {
-            saveVideos(deviceVideos)
-            return@withContext sortVideosDeterministically(deviceVideos)
-        }
-
-        // If no local videos exist anywhere on device storage, fallback to sample videos
-        saveVideos(SAMPLE_VIDEOS)
-        sortVideosDeterministically(SAMPLE_VIDEOS)
-    }
-
-    suspend fun saveVideos(videos: List<VideoItem>) = withContext(Dispatchers.IO) {
-        val sorted = sortVideosDeterministically(videos)
-        val array = JSONArray()
-        for (item in sorted) {
-            val obj = JSONObject()
-            obj.put("id", item.id)
-            obj.put("title", item.title)
-            obj.put("uriString", item.uriString)
-            obj.put("folderName", item.folderName)
-            item.youtubeId?.let { obj.put("youtubeId", it) }
-            obj.put("isSample", item.isSample)
-            obj.put("durationMs", item.durationMs)
-            item.mimeType?.let { obj.put("mimeType", it) }
-            obj.put("sizeBytes", item.sizeBytes)
-            obj.put("dateAdded", item.dateAdded)
-            array.put(obj)
-        }
-        prefs.edit().putString(KEY_VIDEOS, array.toString()).apply()
+        // When empty on fresh install, return empty list (No automatic device scan, no remote HTTP videos)
+        emptyList()
     }
 
     /**
-     * Scan files from DocumentTree URI (Storage Access Framework) recursively across all subfolders
+     * Saves videos into Room Database while retaining SharedPreferences backup.
      */
-    suspend fun scanDocumentTree(treeUri: Uri): List<VideoItem> = withContext(Dispatchers.IO) {
-        val results = mutableListOf<VideoItem>()
-        val contentResolver: ContentResolver = context.contentResolver
+    suspend fun saveVideos(videos: List<VideoItem>) = withContext(Dispatchers.IO) {
+        val sorted = sortVideosDeterministically(videos)
+
+        // 1. SharedPreferences backup
+        try {
+            val array = JSONArray()
+            for (item in sorted) {
+                val obj = JSONObject()
+                obj.put("id", item.id)
+                obj.put("title", item.title)
+                obj.put("uriString", item.uriString)
+                obj.put("folderName", item.folderName)
+                item.youtubeId?.let { obj.put("youtubeId", it) }
+                obj.put("isSample", item.isSample)
+                obj.put("durationMs", item.durationMs)
+                item.mimeType?.let { obj.put("mimeType", it) }
+                obj.put("sizeBytes", item.sizeBytes)
+                obj.put("dateAdded", item.dateAdded)
+                array.put(obj)
+            }
+            prefs.edit().putString(KEY_VIDEOS, array.toString()).apply()
+        } catch (ignored: Exception) {}
+
+        // 2. Room Database persistence
+        if (videos.isEmpty()) {
+            videoDao.deleteAll()
+            return@withContext
+        }
 
         try {
-            try {
-                contentResolver.takePersistableUriPermission(
-                    treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+            val folders = sorted.map { it.folderName.ifBlank { "All Videos" } }.distinct()
+            val folderMap = mutableMapOf<String, String>()
+            for (fName in folders) {
+                val folderId = "folder_" + Math.abs(fName.hashCode())
+                val existing = trackedFolderDao.getFolderById(folderId)
+                if (existing == null) {
+                    trackedFolderDao.insertOrUpdate(
+                        TrackedFolderEntity(
+                            id = folderId,
+                            treeUriString = "migrated://folder/" + Math.abs(fName.hashCode()),
+                            displayName = fName,
+                            dateAdded = System.currentTimeMillis(),
+                            lastScanned = System.currentTimeMillis(),
+                            isEnabled = true,
+                            videoCount = sorted.count { it.folderName == fName }
+                        )
+                    )
+                }
+                folderMap[fName] = folderId
+            }
+
+            val entities = sorted.map { item ->
+                val fId = folderMap[item.folderName.ifBlank { "All Videos" }] ?: "folder_default"
+                VideoEntity(
+                    id = item.id,
+                    folderId = fId,
+                    uriString = item.uriString,
+                    fileName = item.title,
+                    displayTitle = item.title,
+                    durationMs = item.durationMs,
+                    sizeBytes = item.sizeBytes,
+                    mimeType = item.mimeType,
+                    lastModified = item.dateAdded,
+                    dateAdded = item.dateAdded,
+                    youtubeId = item.youtubeId,
+                    isSample = item.isSample
                 )
-            } catch (ignored: Exception) {}
+            }
+            videoDao.insertOrUpdateAll(entities)
+        } catch (e: Exception) {
+            Log.e("VideoRepository", "Failed to save videos to Room: ${e.message}", e)
+        }
+    }
 
-            val rootDocId = DocumentsContract.getTreeDocumentId(treeUri)
-            val rootFolderName = getDocumentDisplayName(contentResolver, treeUri) ?: "Root Folder"
+    /**
+     * Scans files from DocumentTree URI (Storage Access Framework) recursively across all subfolders.
+     * Persists TrackedFolderEntity and verifies persistable URI permissions.
+     * Uses safe identity matching without full-file hashing.
+     */
+    suspend fun scanDocumentTree(treeUri: Uri): List<VideoItem> = withContext(Dispatchers.IO) {
+        val contentResolver: ContentResolver = context.contentResolver
 
-            fun scanDirectory(docId: String, currentFolderPath: String) {
-                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
-                val cursor: Cursor? = contentResolver.query(
+        // 1. Request and verify persistable URI permission
+        try {
+            contentResolver.takePersistableUriPermission(
+                treeUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            Log.w("VideoRepository", "takePersistableUriPermission failed for $treeUri: ${e.message}")
+        }
+
+        val rootDocId = try {
+            DocumentsContract.getTreeDocumentId(treeUri)
+        } catch (e: Exception) {
+            Log.e("VideoRepository", "Invalid tree URI: $treeUri", e)
+            return@withContext emptyList()
+        }
+
+        val rootFolderName = getDocumentDisplayName(contentResolver, treeUri) ?: "Folder"
+
+        // 2. Prevent duplicate folder registration
+        val existingFolder = trackedFolderDao.getFolderByTreeUri(treeUri.toString())
+        val folderId = if (existingFolder != null) {
+            existingFolder.id
+        } else {
+            val newId = "folder_" + UUID.randomUUID().toString()
+            val newFolder = TrackedFolderEntity(
+                id = newId,
+                treeUriString = treeUri.toString(),
+                displayName = rootFolderName,
+                dateAdded = System.currentTimeMillis(),
+                lastScanned = System.currentTimeMillis(),
+                isEnabled = true,
+                videoCount = 0
+            )
+            trackedFolderDao.insertOrUpdate(newFolder)
+            newId
+        }
+
+        // 3. Scan directory tree recursively
+        val discoveredEntities = mutableListOf<VideoEntity>()
+
+        fun scanDirectory(docId: String, currentFolderPath: String) {
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+            val cursor: Cursor? = try {
+                contentResolver.query(
                     childrenUri,
                     arrayOf(
                         DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -191,60 +413,128 @@ class VideoRepository(private val context: Context) {
                     null,
                     null
                 )
+            } catch (e: Exception) {
+                Log.w("VideoRepository", "Directory query failed for docId $docId: ${e.message}")
+                null
+            }
 
-                cursor?.use {
-                    val idIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                    val nameIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                    val mimeIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                    val sizeIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
-                    val modIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+            cursor?.use {
+                val idIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+                val modIndex = it.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
 
-                    while (it.moveToNext()) {
-                        val childId = it.getString(idIndex)
-                        val displayName = it.getString(nameIndex) ?: continue
-                        val mimeType = it.getString(mimeIndex)
-                        val size = if (sizeIndex >= 0) it.getLong(sizeIndex) else 0L
-                        val modified = if (modIndex >= 0) it.getLong(modIndex) else 0L
+                while (it.moveToNext()) {
+                    val childId = it.getString(idIndex)
+                    val displayName = it.getString(nameIndex) ?: continue
+                    val mimeType = it.getString(mimeIndex)
+                    val size = if (sizeIndex >= 0) it.getLong(sizeIndex) else 0L
+                    val modified = if (modIndex >= 0) it.getLong(modIndex) else 0L
 
-                        val isDir = mimeType == DocumentsContract.Document.MIME_TYPE_DIR ||
-                                mimeType == "vnd.android.document/directory"
+                    val isDir = mimeType == DocumentsContract.Document.MIME_TYPE_DIR ||
+                            mimeType == "vnd.android.document/directory"
 
-                        if (isDir) {
-                            // Recursively scan subfolder and sub-subfolder
-                            val nextPath = if (currentFolderPath.isEmpty()) displayName else "$currentFolderPath / $displayName"
-                            scanDirectory(childId, nextPath)
-                        } else {
-                            val isMedia = mimeType?.startsWith("video/") == true ||
+                    if (isDir) {
+                        val nextPath = if (currentFolderPath.isEmpty()) displayName else "$currentFolderPath / $displayName"
+                        scanDirectory(childId, nextPath)
+                    } else {
+                        val isMedia = mimeType?.startsWith("video/") == true ||
                                 isPotentialMediaFile(displayName, mimeType)
 
-                            if (isMedia) {
-                                val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
-                                val folderDisplay = if (currentFolderPath.isEmpty()) rootFolderName else currentFolderPath
-                                results.add(
-                                    VideoItem(
-                                        id = UUID.randomUUID().toString(),
-                                        title = cleanTitle(displayName),
-                                        uriString = fileUri.toString(),
-                                        folderName = folderDisplay,
-                                        youtubeId = YoutubeIdHelper.extractYoutubeId(displayName),
-                                        isSample = false,
-                                        mimeType = mimeType,
+                        if (isMedia) {
+                            val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
+                            val uriStr = fileUri.toString()
+                            val clean = cleanTitle(displayName)
+                            val ytId = YoutubeIdHelper.extractYoutubeId(displayName)
+
+                            // Identity Reconciliation:
+                            // 1. Exact URI Match
+                            val existingByUri = videoDao.getVideoByUri(uriStr)
+                            if (existingByUri != null) {
+                                discoveredEntities.add(
+                                    existingByUri.copy(
+                                        fileName = displayName,
+                                        displayTitle = clean,
                                         sizeBytes = size,
-                                        dateAdded = modified
+                                        lastModified = modified,
+                                        youtubeId = ytId
                                     )
                                 )
+                            } else {
+                                // 2. If URI changes, check candidate match ONLY if uniquely unambiguous
+                                val candidates = videoDao.findReconciliationCandidates(
+                                    folderId = folderId,
+                                    sizeBytes = size,
+                                    minModified = modified - 3000L,
+                                    maxModified = modified + 3000L
+                                )
+                                if (candidates.size == 1) {
+                                    val matched = candidates.first()
+                                    discoveredEntities.add(
+                                        matched.copy(
+                                            uriString = uriStr,
+                                            fileName = displayName,
+                                            displayTitle = clean,
+                                            lastModified = modified,
+                                            youtubeId = ytId
+                                        )
+                                    )
+                                } else {
+                                    // Multiple or no candidates: create new record (prevents false positive merge)
+                                    val stableId = "vid_" + Math.abs(uriStr.hashCode()) + "_" + (System.currentTimeMillis() % 10000)
+                                    discoveredEntities.add(
+                                        VideoEntity(
+                                            id = stableId,
+                                            folderId = folderId,
+                                            uriString = uriStr,
+                                            fileName = displayName,
+                                            displayTitle = clean,
+                                            durationMs = 0L,
+                                            sizeBytes = size,
+                                            mimeType = mimeType,
+                                            lastModified = modified,
+                                            dateAdded = System.currentTimeMillis(),
+                                            youtubeId = ytId,
+                                            isSample = false
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-
-            scanDirectory(rootDocId, "")
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
 
-        sortVideosDeterministically(results)
+        scanDirectory(rootDocId, "")
+
+        // 4. Batch persist to Room Database
+        if (discoveredEntities.isNotEmpty()) {
+            videoDao.insertOrUpdateAll(discoveredEntities)
+            trackedFolderDao.updateScanStats(folderId, System.currentTimeMillis(), discoveredEntities.size)
+        }
+
+        // 5. Query and return all current videos with details
+        val allDetails = videoDao.getAllVideosWithDetails()
+        val mapped = allDetails.map { d ->
+            VideoItem(
+                id = d.id,
+                title = d.displayTitle.ifBlank { d.fileName },
+                uriString = d.uriString,
+                folderName = d.folderDisplayName ?: rootFolderName,
+                youtubeId = d.youtubeId,
+                isSample = d.isSample,
+                durationMs = d.durationMs,
+                mimeType = d.mimeType,
+                sizeBytes = d.sizeBytes,
+                dateAdded = d.dateAdded,
+                playbackPositionMs = d.playbackPositionMs ?: 0L,
+                isCompleted = d.isCompleted ?: false
+            )
+        }
+
+        sortVideosDeterministically(mapped)
     }
 
     suspend fun createVideoFromUri(uri: Uri, context: Context): VideoItem = withContext(Dispatchers.IO) {
@@ -278,16 +568,43 @@ class VideoRepository(private val context: Context) {
             }
         } catch (ignored: Exception) {}
 
-        VideoItem(
+        val importedFolderId = "folder_imported"
+        if (trackedFolderDao.getFolderById(importedFolderId) == null) {
+            trackedFolderDao.insertOrUpdate(
+                TrackedFolderEntity(
+                    id = importedFolderId,
+                    treeUriString = "content://kids_tube/imported",
+                    displayName = "Imported",
+                    dateAdded = System.currentTimeMillis(),
+                    lastScanned = System.currentTimeMillis(),
+                    isEnabled = true,
+                    videoCount = 1
+                )
+            )
+        }
+
+        val videoEntity = VideoEntity(
             id = UUID.randomUUID().toString(),
-            title = cleanTitle(displayName),
+            folderId = importedFolderId,
             uriString = uri.toString(),
+            fileName = displayName,
+            displayTitle = cleanTitle(displayName),
+            mimeType = mimeType,
+            sizeBytes = sizeBytes,
+            dateAdded = System.currentTimeMillis()
+        )
+        videoDao.insertOrUpdate(videoEntity)
+
+        VideoItem(
+            id = videoEntity.id,
+            title = videoEntity.displayTitle,
+            uriString = videoEntity.uriString,
             folderName = "Imported",
             youtubeId = YoutubeIdHelper.extractYoutubeId(displayName),
             isSample = false,
             mimeType = mimeType,
             sizeBytes = sizeBytes,
-            dateAdded = System.currentTimeMillis()
+            dateAdded = videoEntity.dateAdded
         )
     }
 
@@ -307,7 +624,6 @@ class VideoRepository(private val context: Context) {
             MediaStore.Video.Media.DATA
         )
 
-        // 1. Query MediaStore External & Internal
         val collections = listOf(
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.INTERNAL_CONTENT_URI
@@ -373,7 +689,6 @@ class VideoRepository(private val context: Context) {
             }
         }
 
-        // 2. Direct File System Scanner (Movies, Downloads, DCIM, Pictures, Documents, Storage root, Secondary Volumes)
         try {
             val commonDirs = mutableListOf<File>()
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)?.let { commonDirs.add(it) }
@@ -385,7 +700,6 @@ class VideoRepository(private val context: Context) {
                 Environment.getExternalStorageDirectory()?.let { commonDirs.add(it) }
             } catch (ignored: Exception) {}
 
-            // Check secondary storage mounts under /storage
             try {
                 val storageRoot = File("/storage")
                 if (storageRoot.exists() && storageRoot.isDirectory) {
@@ -402,8 +716,6 @@ class VideoRepository(private val context: Context) {
 
             fun scanDirFiles(dir: File, depth: Int = 0) {
                 if (depth > 8 || !dir.exists() || !dir.isDirectory || !dir.canRead()) return
-
-                // Skip hidden directories and directories with .nomedia file
                 if (dir.name.startsWith(".")) return
                 val nomediaFile = File(dir, ".nomedia")
                 if (nomediaFile.exists()) return
@@ -415,7 +727,6 @@ class VideoRepository(private val context: Context) {
                             scanDirFiles(file, depth + 1)
                         }
                     } else if (file.isFile && isPotentialMediaFile(file.name) && file.length() > 512) {
-                        // If file extension is .ts, verify it is binary/MPEG-TS and not a TypeScript source code file
                         if (file.name.endsWith(".ts", ignoreCase = true)) {
                             try {
                                 val headerBuf = ByteArray(188)
@@ -461,6 +772,56 @@ class VideoRepository(private val context: Context) {
         sortVideosDeterministically(results)
     }
 
+    suspend fun deleteVideo(videoId: String) = withContext(Dispatchers.IO) {
+        videoDao.deleteById(videoId)
+    }
+
+    suspend fun getTrackedFolders(): List<TrackedFolderEntity> = withContext(Dispatchers.IO) {
+        trackedFolderDao.getAllFolders()
+    }
+
+    fun getTrackedFoldersFlow(): Flow<List<TrackedFolderEntity>> {
+        return trackedFolderDao.getAllFoldersFlow()
+    }
+
+    suspend fun removeTrackedFolder(folderId: String) = withContext(Dispatchers.IO) {
+        trackedFolderDao.deleteById(folderId)
+    }
+
+    suspend fun savePlaybackProgress(videoId: String, positionMs: Long, durationMs: Long, isCompleted: Boolean) = withContext(Dispatchers.IO) {
+        try {
+            playbackProgressDao.saveProgress(
+                PlaybackProgressEntity(
+                    videoId = videoId,
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    lastUpdated = System.currentTimeMillis(),
+                    isCompleted = isCompleted
+                )
+            )
+        } catch (e: Exception) {
+            Log.w("VideoRepository", "Failed to save playback progress: ${e.message}")
+        }
+    }
+
+    suspend fun getPlaybackProgress(videoId: String): PlaybackProgressEntity? = withContext(Dispatchers.IO) {
+        playbackProgressDao.getProgress(videoId)
+    }
+
+    suspend fun recordWatchHistory(videoId: String, watchedDurationMs: Long) = withContext(Dispatchers.IO) {
+        try {
+            watchHistoryDao.recordHistory(
+                WatchHistoryEntity(
+                    videoId = videoId,
+                    watchedTimestamp = System.currentTimeMillis(),
+                    watchedDurationMs = watchedDurationMs
+                )
+            )
+        } catch (e: Exception) {
+            Log.w("VideoRepository", "Failed to record watch history: ${e.message}")
+        }
+    }
+
     private fun getDocumentDisplayName(resolver: ContentResolver, uri: Uri): String? {
         try {
             val cursor = resolver.query(uri, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)
@@ -479,7 +840,6 @@ class VideoRepository(private val context: Context) {
         val ext = fileName.substringAfterLast('.', "").lowercase()
         if (ext.isEmpty()) return true
 
-        // Exclude only known non-media documents, archives, code, images, fonts, system files
         val nonMediaExtensions = setOf(
             "txt", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv",
             "json", "xml", "html", "htm", "css", "js", "jsx", "tsx", "kt", "java", "py", "c", "cpp", "h",
@@ -499,10 +859,18 @@ class VideoRepository(private val context: Context) {
         )
     }
 
-    private fun cleanTitle(rawName: String): String {
-        return rawName.substringBeforeLast('.')
+    fun cleanTitle(rawName: String): String {
+        val withoutExt = rawName.substringBeforeLast('.')
+        val withoutTags = withoutExt
+            .replace(Regex("(?i)\\b(1080p|720p|480p|360p|2160p|4k|x264|x265|hevc|h264|aac|webrip|bluray|dvdrip)\\b"), "")
             .replace('_', ' ')
             .replace('-', ' ')
             .trim()
+
+        return if (withoutTags.isBlank()) {
+            withoutExt.replace('_', ' ').replace('-', ' ').trim()
+        } else {
+            withoutTags.replace(Regex("\\s+"), " ")
+        }
     }
 }
