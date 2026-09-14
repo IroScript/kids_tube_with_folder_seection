@@ -94,8 +94,11 @@ jobs:
         run: |
           set -o pipefail
           gradle :app:assembleDebug --stacktrace --no-daemon -x test -x lint 2>&1 | tee build_debug.log || {
-            ERR_MSG=$(tail -n 40 build_debug.log | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "::error title=GradleBuildFailure::$ERR_MSG"
+            ERR_MSG=$(grep -E "(^e: |error:|Compilation error|FAILURE:)" build_debug.log | head -n 30 | sed ':a;N;$!ba;s/\n/%0A/g')
+            if [ -z "$ERR_MSG" ]; then
+              ERR_MSG=$(tail -n 80 build_debug.log | head -n 30 | sed ':a;N;$!ba;s/\n/%0A/g')
+            fi
+            echo "::error title=KotlinCompilationError::$ERR_MSG"
             exit 1
           }
 
