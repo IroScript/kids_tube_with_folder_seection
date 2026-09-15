@@ -44,7 +44,18 @@ jobs:
           java-version: '21'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        continue-on-error: true
+
+      - name: Ensure Android SDK Environment
+        run: |
+          if [ -z "$ANDROID_HOME" ] || [ ! -d "$ANDROID_HOME" ]; then
+            if [ -d "/usr/local/lib/android/sdk" ]; then
+              echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+              echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+              echo "/usr/local/lib/android/sdk/platform-tools" >> "$GITHUB_PATH"
+            fi
+          fi
 
       - name: Accept Android SDK Licenses & Install Components
         run: |
