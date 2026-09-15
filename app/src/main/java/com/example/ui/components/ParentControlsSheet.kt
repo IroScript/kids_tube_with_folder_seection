@@ -41,7 +41,9 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PermMedia
 import androidx.compose.material.icons.filled.PlayCircleFilled
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -61,7 +63,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import com.example.model.TrackedFolderItem
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -91,6 +98,7 @@ fun ParentControlsSheet(
     isAutoPlay: Boolean,
     isShuffleMode: Boolean,
     screenTimerMinutes: Int?,
+    trackedFolders: List<TrackedFolderItem> = emptyList(),
     onImportFolder: (Uri) -> Unit,
     onImportFiles: (List<Uri>) -> Unit,
     onScanDevice: () -> Unit,
@@ -100,6 +108,10 @@ fun ParentControlsSheet(
     onToggleAutoPlay: () -> Unit,
     onToggleShuffle: () -> Unit,
     onSetScreenTimer: (Int?) -> Unit,
+    onToggleFolderEnabled: (String, Boolean) -> Unit = { _, _ -> },
+    onRemoveFolder: (String) -> Unit = {},
+    onRescanFolder: (String) -> Unit = {},
+    onReGrantFolderPermission: (String, Uri) -> Unit = { _, _ -> },
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -111,6 +123,18 @@ fun ParentControlsSheet(
         skipPartiallyExpanded = true,
         confirmValueChange = { false }
     )
+
+    // Track which folder is awaiting permission re-grant
+    var pendingReGrantFolderId by remember { mutableStateOf<String?>(null) }
+    val reGrantPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        val folderId = pendingReGrantFolderId
+        if (folderId != null && uri != null) {
+            onReGrantFolderPermission(folderId, uri)
+        }
+        pendingReGrantFolderId = null
+    }
 
     // Runtime Permission Launcher for Storage & Media Videos
     val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -487,6 +511,219 @@ fun ParentControlsSheet(
                                                 border = null,
                                                 modifier = Modifier.weight(1f)
                                             )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Section 2.5: Tracked Folders Management
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color(0xFF25283C),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Filled.FolderOpen,
+                                            contentDescription = null,
+                                            tint = KidsYellow,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "📁 Tracked Folders (${trackedFolders.size})",
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 16.sp,
+                                            color = KidsYellow
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Disabled or unpermitted folders are hidden from kids. Removing a folder keeps files on storage 100% safe.",
+                                    fontSize = 11.sp,
+                                    color = Color.White.copy(alpha = 0.6f)
+                                )
+                            }
+                        }
+                    }
+
+                    if (trackedFolders.isEmpty()) {
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF202334)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "No folders tracked yet. Click 'Select Folder' above to add child-safe folders.",
+                                        color = Color.White.copy(alpha = 0.6f),
+                                        fontSize = 12.sp,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        items(trackedFolders, key = { it.id }) { folder ->
+                            Card(
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (!folder.isPermissionGranted) Color(0xFF2D1E22) else Color(0xFF202334)
+                                ),
+                                border = if (!folder.isPermissionGranted) BorderStroke(1.dp, KidsRed.copy(alpha = 0.5f)) else null,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.FolderOpen,
+                                                contentDescription = null,
+                                                tint = if (!folder.isPermissionGranted) KidsRed else if (folder.isEnabled) KidsGreen else Color.Gray,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Column {
+                                                Text(
+                                                    text = folder.displayName,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 14.sp,
+                                                    color = Color.White,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        text = "${folder.videoCount} videos",
+                                                        fontSize = 11.sp,
+                                                        color = Color.White.copy(alpha = 0.7f)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    if (!folder.isPermissionGranted) {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(6.dp),
+                                                            color = KidsRed.copy(alpha = 0.2f)
+                                                        ) {
+                                                            Text(
+                                                                text = "⚠️ Permission Lost",
+                                                                color = KidsRed,
+                                                                fontSize = 10.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    } else if (folder.isEnabled) {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(6.dp),
+                                                            color = KidsGreen.copy(alpha = 0.2f)
+                                                        ) {
+                                                            Text(
+                                                                text = "Active for Kids",
+                                                                color = KidsGreen,
+                                                                fontSize = 10.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    } else {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(6.dp),
+                                                            color = Color.Gray.copy(alpha = 0.2f)
+                                                        ) {
+                                                            Text(
+                                                                text = "Hidden from Kids",
+                                                                color = Color.LightGray,
+                                                                fontSize = 10.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Switch(
+                                                checked = folder.isEnabled,
+                                                onCheckedChange = { onToggleFolderEnabled(folder.id, it) },
+                                                colors = SwitchDefaults.colors(
+                                                    checkedThumbColor = Color.White,
+                                                    checkedTrackColor = KidsGreen
+                                                )
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            IconButton(
+                                                onClick = { onRescanFolder(folder.id) },
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.Refresh,
+                                                    contentDescription = "Rescan folder",
+                                                    tint = KidsCyan,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            IconButton(
+                                                onClick = { onRemoveFolder(folder.id) },
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.Delete,
+                                                    contentDescription = "Remove folder from library",
+                                                    tint = KidsRed.copy(alpha = 0.8f),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    if (!folder.isPermissionGranted) {
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Button(
+                                            onClick = {
+                                                pendingReGrantFolderId = folder.id
+                                                reGrantPicker.launch(null)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = KidsRed),
+                                            shape = RoundedCornerShape(10.dp),
+                                            modifier = Modifier.fillMaxWidth().height(36.dp)
+                                        ) {
+                                            Icon(Icons.Filled.Warning, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Re-Grant Storage Permission", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                         }
                                     }
                                 }

@@ -507,6 +507,7 @@ fun KidsTubeScreen(
                 isAutoPlay = uiState.isAutoPlayNext,
                 isShuffleMode = uiState.isShuffleMode,
                 screenTimerMinutes = uiState.screenTimerMinutes,
+                trackedFolders = uiState.trackedFolders,
                 onImportFolder = { viewModel.importFolder(it) },
                 onImportFiles = { viewModel.importUris(it, context) },
                 onScanDevice = { viewModel.scanDeviceVideos() },
@@ -516,6 +517,10 @@ fun KidsTubeScreen(
                 onToggleAutoPlay = { viewModel.toggleAutoPlay() },
                 onToggleShuffle = { viewModel.toggleShuffle() },
                 onSetScreenTimer = { viewModel.setScreenTimeLimit(it) },
+                onToggleFolderEnabled = { folderId, isEnabled -> viewModel.toggleFolderEnabled(folderId, isEnabled) },
+                onRemoveFolder = { folderId -> viewModel.removeTrackedFolder(folderId) },
+                onRescanFolder = { folderId -> viewModel.rescanTrackedFolder(folderId) },
+                onReGrantFolderPermission = { folderId, uri -> viewModel.reGrantFolderPermission(folderId, uri) },
                 onDismiss = { viewModel.exitParentMode() }
             )
         }

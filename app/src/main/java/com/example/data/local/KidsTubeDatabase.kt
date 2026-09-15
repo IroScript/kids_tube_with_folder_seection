@@ -13,6 +13,9 @@ import com.example.data.local.entity.TrackedFolderEntity
 import com.example.data.local.entity.VideoEntity
 import com.example.data.local.entity.WatchHistoryEntity
 
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+
 @Database(
     entities = [
         TrackedFolderEntity::class,
@@ -20,7 +23,7 @@ import com.example.data.local.entity.WatchHistoryEntity
         PlaybackProgressEntity::class,
         WatchHistoryEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class KidsTubeDatabase : RoomDatabase() {
@@ -32,6 +35,12 @@ abstract class KidsTubeDatabase : RoomDatabase() {
     companion object {
         private const val DB_NAME = "kidstube_database.db"
 
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tracked_folders ADD COLUMN isPermissionGranted INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         @Volatile
         private var INSTANCE: KidsTubeDatabase? = null
 
@@ -42,6 +51,7 @@ abstract class KidsTubeDatabase : RoomDatabase() {
                     KidsTubeDatabase::class.java,
                     DB_NAME
                 )
+                .addMigrations(MIGRATION_1_2)
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build()
                 INSTANCE = instance

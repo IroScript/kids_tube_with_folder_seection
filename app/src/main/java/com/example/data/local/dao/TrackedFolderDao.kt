@@ -39,4 +39,19 @@ interface TrackedFolderDao {
 
     @Query("UPDATE tracked_folders SET lastScanned = :timestamp, videoCount = :count WHERE id = :folderId")
     suspend fun updateScanStats(folderId: String, timestamp: Long, count: Int)
+
+    @Query("UPDATE tracked_folders SET isEnabled = :isEnabled WHERE id = :id")
+    suspend fun updateFolderEnabled(id: String, isEnabled: Boolean)
+
+    @Query("UPDATE tracked_folders SET isPermissionGranted = :isGranted WHERE id = :id")
+    suspend fun updateFolderPermission(id: String, isGranted: Boolean)
+
+    @Query("UPDATE tracked_folders SET isPermissionGranted = :isGranted, treeUriString = :newTreeUri WHERE id = :id")
+    suspend fun updateFolderUriAndPermission(id: String, newTreeUri: String, isGranted: Boolean)
+
+    @Query("UPDATE tracked_folders SET displayName = :displayName, lastScanned = :lastScanned, videoCount = :videoCount WHERE id = :id")
+    suspend fun updateFolderMetadata(id: String, displayName: String, lastScanned: Long, videoCount: Int)
+
+    @Query("SELECT * FROM tracked_folders WHERE isEnabled = 1 AND isPermissionGranted = 1")
+    suspend fun getActivePermittedFolders(): List<TrackedFolderEntity>
 }

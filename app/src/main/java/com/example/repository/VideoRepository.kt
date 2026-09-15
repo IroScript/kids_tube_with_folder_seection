@@ -17,10 +17,12 @@ import com.example.data.local.entity.PlaybackProgressEntity
 import com.example.data.local.entity.TrackedFolderEntity
 import com.example.data.local.entity.VideoEntity
 import com.example.data.local.entity.WatchHistoryEntity
+import com.example.model.TrackedFolderItem
 import com.example.model.VideoItem
 import com.example.util.YoutubeIdHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -211,12 +213,13 @@ class VideoRepository(private val context: Context) {
 
     /**
      * Primary Caller-Facing API: Returns indexed videos with folder & playback details from Room DB.
+     * Enforces child safety: only videos from folders where isEnabled = 1 and isPermissionGranted = 1 are returned.
      * Guaranteed zero automatic whole-device scans and zero remote sample injection on fresh launch.
      */
     suspend fun getSavedVideos(): List<VideoItem> = withContext(Dispatchers.IO) {
         ensureRoomMigrated()
 
-        val detailsList = videoDao.getAllVideosWithDetails()
+        val detailsList = videoDao.getActiveVideosWithDetails()
         if (detailsList.isNotEmpty()) {
             val mapped = detailsList.map { details ->
                 VideoItem(
@@ -235,6 +238,11 @@ class VideoRepository(private val context: Context) {
                 )
             }
             return@withContext sortVideosDeterministically(mapped)
+        }
+
+        if (videoDao.getVideoCount() > 0) {
+            // All existing folders are disabled or have permission revoked
+            return@withContext emptyList()
         }
 
         // Check fallback if SharedPreferences has unmigrated items
@@ -269,6 +277,32 @@ class VideoRepository(private val context: Context) {
 
         // When empty on fresh install, return empty list (No automatic device scan, no remote HTTP videos)
         emptyList()
+    }
+
+    /**
+     * Returns all videos across all folders regardless of enabled or permission state.
+     * Used for parent administration and library statistics.
+     */
+    suspend fun getAllVideos(): List<VideoItem> = withContext(Dispatchers.IO) {
+        ensureRoomMigrated()
+        val allDetails = videoDao.getAllVideosWithDetails()
+        val mapped = allDetails.map { details ->
+            VideoItem(
+                id = details.id,
+                title = details.displayTitle.ifBlank { details.fileName },
+                uriString = details.uriString,
+                folderName = details.folderDisplayName ?: "All Videos",
+                youtubeId = details.youtubeId,
+                isSample = details.isSample,
+                durationMs = details.durationMs,
+                mimeType = details.mimeType,
+                sizeBytes = details.sizeBytes,
+                dateAdded = details.dateAdded,
+                playbackPositionMs = details.playbackPositionMs ?: 0L,
+                isCompleted = details.isCompleted ?: false
+            )
+        }
+        sortVideosDeterministically(mapped)
     }
 
     /**
@@ -349,52 +383,26 @@ class VideoRepository(private val context: Context) {
     }
 
     /**
-     * Scans files from DocumentTree URI (Storage Access Framework) recursively across all subfolders.
-     * Persists TrackedFolderEntity and verifies persistable URI permissions.
-     * Uses safe identity matching without full-file hashing.
+     * Reconciles files within a specific tracked folder.
+     * Detects added and removed files on disk without duplicating records or full-file hashing.
      */
-    suspend fun scanDocumentTree(treeUri: Uri): List<VideoItem> = withContext(Dispatchers.IO) {
+    private suspend fun scanAndReconcileFolder(
+        folderId: String,
+        treeUri: Uri,
+        rootFolderName: String
+    ): Int = withContext(Dispatchers.IO) {
         val contentResolver: ContentResolver = context.contentResolver
-
-        // 1. Request and verify persistable URI permission
-        try {
-            contentResolver.takePersistableUriPermission(
-                treeUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
-        } catch (e: Exception) {
-            Log.w("VideoRepository", "takePersistableUriPermission failed for $treeUri: ${e.message}")
-        }
 
         val rootDocId = try {
             DocumentsContract.getTreeDocumentId(treeUri)
         } catch (e: Exception) {
-            Log.e("VideoRepository", "Invalid tree URI: $treeUri", e)
-            return@withContext emptyList()
+            Log.e("VideoRepository", "Invalid tree URI or permission revoked: $treeUri", e)
+            trackedFolderDao.updateFolderPermission(folderId, false)
+            return@withContext 0
         }
 
-        val rootFolderName = getDocumentDisplayName(contentResolver, treeUri) ?: "Folder"
-
-        // 2. Prevent duplicate folder registration
-        val existingFolder = trackedFolderDao.getFolderByTreeUri(treeUri.toString())
-        val folderId = if (existingFolder != null) {
-            existingFolder.id
-        } else {
-            val newId = "folder_" + UUID.randomUUID().toString()
-            val newFolder = TrackedFolderEntity(
-                id = newId,
-                treeUriString = treeUri.toString(),
-                displayName = rootFolderName,
-                dateAdded = System.currentTimeMillis(),
-                lastScanned = System.currentTimeMillis(),
-                isEnabled = true,
-                videoCount = 0
-            )
-            trackedFolderDao.insertOrUpdate(newFolder)
-            newId
-        }
-
-        // 3. Scan directory tree recursively
+        val existingVideosInFolder = videoDao.getVideosByFolderId(folderId)
+        val existingUriMap = existingVideosInFolder.associateBy { it.uriString }
         val discoveredEntities = mutableListOf<VideoEntity>()
 
         suspend fun scanDirectory(docId: String, currentFolderPath: String) {
@@ -450,10 +458,11 @@ class VideoRepository(private val context: Context) {
 
                             // Identity Reconciliation:
                             // 1. Exact URI Match
-                            val existingByUri = videoDao.getVideoByUri(uriStr)
+                            val existingByUri = existingUriMap[uriStr] ?: videoDao.getVideoByUri(uriStr)
                             if (existingByUri != null) {
                                 discoveredEntities.add(
                                     existingByUri.copy(
+                                        folderId = folderId,
                                         fileName = displayName,
                                         displayTitle = clean,
                                         sizeBytes = size,
@@ -509,33 +518,120 @@ class VideoRepository(private val context: Context) {
 
         scanDirectory(rootDocId, "")
 
-        // 4. Batch persist to Room Database
+        // Remove deleted files from Room DB
+        val discoveredUris = discoveredEntities.map { it.uriString }.toSet()
+        val removedVideoIds = existingVideosInFolder.filterNot { it.uriString in discoveredUris }.map { it.id }
+        if (removedVideoIds.isNotEmpty()) {
+            videoDao.deleteByIds(removedVideoIds)
+        }
+
+        // Batch persist discovered videos to Room DB
         if (discoveredEntities.isNotEmpty()) {
             videoDao.insertOrUpdateAll(discoveredEntities)
-            trackedFolderDao.updateScanStats(folderId, System.currentTimeMillis(), discoveredEntities.size)
         }
 
-        // 5. Query and return all current videos with details
-        val allDetails = videoDao.getAllVideosWithDetails()
-        val mapped = allDetails.map { d ->
-            VideoItem(
-                id = d.id,
-                title = d.displayTitle.ifBlank { d.fileName },
-                uriString = d.uriString,
-                folderName = d.folderDisplayName ?: rootFolderName,
-                youtubeId = d.youtubeId,
-                isSample = d.isSample,
-                durationMs = d.durationMs,
-                mimeType = d.mimeType,
-                sizeBytes = d.sizeBytes,
-                dateAdded = d.dateAdded,
-                playbackPositionMs = d.playbackPositionMs ?: 0L,
-                isCompleted = d.isCompleted ?: false
-            )
-        }
+        val totalFolderVideos = videoDao.getVideosByFolderId(folderId).size
+        trackedFolderDao.updateScanStats(folderId, System.currentTimeMillis(), totalFolderVideos)
+        trackedFolderDao.updateFolderPermission(folderId, true)
 
-        sortVideosDeterministically(mapped)
+        totalFolderVideos
     }
+
+    /**
+     * Adds or updates a tracked Storage Access Framework (SAF) folder.
+     * Takes persistable URI permission, prevents duplicate registration, scans directory, and persists.
+     */
+    suspend fun addOrUpdateTrackedFolder(treeUri: Uri): List<VideoItem> = withContext(Dispatchers.IO) {
+        val contentResolver = context.contentResolver
+
+        try {
+            contentResolver.takePersistableUriPermission(
+                treeUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            Log.w("VideoRepository", "takePersistableUriPermission failed for $treeUri: ${e.message}")
+        }
+
+        val rootFolderName = getDocumentDisplayName(contentResolver, treeUri) ?: "Folder"
+
+        // Prevent duplicate folder registration
+        val existingFolder = trackedFolderDao.getFolderByTreeUri(treeUri.toString())
+        val folderId = if (existingFolder != null) {
+            trackedFolderDao.updateFolderPermission(existingFolder.id, true)
+            existingFolder.id
+        } else {
+            val newId = "folder_" + UUID.randomUUID().toString()
+            val newFolder = TrackedFolderEntity(
+                id = newId,
+                treeUriString = treeUri.toString(),
+                displayName = rootFolderName,
+                dateAdded = System.currentTimeMillis(),
+                lastScanned = System.currentTimeMillis(),
+                isEnabled = true,
+                isPermissionGranted = true,
+                videoCount = 0
+            )
+            trackedFolderDao.insertOrUpdate(newFolder)
+            newId
+        }
+
+        scanAndReconcileFolder(folderId, treeUri, rootFolderName)
+        getSavedVideos()
+    }
+
+    /**
+     * Manual rescan of a specific tracked folder.
+     * Reconciles current filesystem against Room without duplicate records.
+     */
+    suspend fun rescanTrackedFolder(folderId: String): List<VideoItem> = withContext(Dispatchers.IO) {
+        val folder = trackedFolderDao.getFolderById(folderId) ?: return@withContext getSavedVideos()
+        val treeUri = try {
+            Uri.parse(folder.treeUriString)
+        } catch (e: Exception) {
+            trackedFolderDao.updateFolderPermission(folderId, false)
+            return@withContext getSavedVideos()
+        }
+
+        // Verify persistable permission
+        var hasPermission = false
+        try {
+            val persisted = context.contentResolver.persistedUriPermissions
+            hasPermission = persisted.any { it.uri == treeUri && it.isReadPermission }
+        } catch (e: Exception) {
+            Log.w("VideoRepository", "Permission check failed: ${e.message}")
+        }
+
+        if (!hasPermission && treeUri.scheme == "content") {
+            try {
+                val testDocId = DocumentsContract.getTreeDocumentId(treeUri)
+                val testUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, testDocId)
+                context.contentResolver.query(testUri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)?.use {
+                    hasPermission = true
+                }
+            } catch (e: Exception) {
+                hasPermission = false
+            }
+        } else if (treeUri.scheme != "content") {
+            hasPermission = true
+        }
+
+        if (!hasPermission) {
+            Log.w("VideoRepository", "Permission revoked for folder ${folder.displayName}")
+            trackedFolderDao.updateFolderPermission(folderId, false)
+            return@withContext getSavedVideos()
+        }
+
+        scanAndReconcileFolder(folderId, treeUri, folder.displayName)
+        getSavedVideos()
+    }
+
+    /**
+     * Scans files from DocumentTree URI (Storage Access Framework) recursively across all subfolders.
+     * Persists TrackedFolderEntity and verifies persistable URI permissions.
+     * Uses safe identity matching without full-file hashing.
+     */
+    suspend fun scanDocumentTree(treeUri: Uri): List<VideoItem> = addOrUpdateTrackedFolder(treeUri)
 
     suspend fun createVideoFromUri(uri: Uri, context: Context): VideoItem = withContext(Dispatchers.IO) {
         var displayName = "Video ${System.currentTimeMillis() % 1000}"
@@ -776,16 +872,98 @@ class VideoRepository(private val context: Context) {
         videoDao.deleteById(videoId)
     }
 
-    suspend fun getTrackedFolders(): List<TrackedFolderEntity> = withContext(Dispatchers.IO) {
-        trackedFolderDao.getAllFolders()
+    suspend fun getTrackedFolders(): List<TrackedFolderItem> = withContext(Dispatchers.IO) {
+        trackedFolderDao.getAllFolders().map { entity ->
+            TrackedFolderItem(
+                id = entity.id,
+                treeUriString = entity.treeUriString,
+                displayName = entity.displayName,
+                dateAdded = entity.dateAdded,
+                lastScanned = entity.lastScanned,
+                isEnabled = entity.isEnabled,
+                isPermissionGranted = entity.isPermissionGranted,
+                videoCount = entity.videoCount
+            )
+        }
+    }
+
+    fun getTrackedFolderItemsFlow(): Flow<List<TrackedFolderItem>> {
+        return trackedFolderDao.getAllFoldersFlow().map { list ->
+            list.map { entity ->
+                TrackedFolderItem(
+                    id = entity.id,
+                    treeUriString = entity.treeUriString,
+                    displayName = entity.displayName,
+                    dateAdded = entity.dateAdded,
+                    lastScanned = entity.lastScanned,
+                    isEnabled = entity.isEnabled,
+                    isPermissionGranted = entity.isPermissionGranted,
+                    videoCount = entity.videoCount
+                )
+            }
+        }
     }
 
     fun getTrackedFoldersFlow(): Flow<List<TrackedFolderEntity>> {
         return trackedFolderDao.getAllFoldersFlow()
     }
 
+    suspend fun setFolderEnabled(folderId: String, isEnabled: Boolean) = withContext(Dispatchers.IO) {
+        trackedFolderDao.updateFolderEnabled(folderId, isEnabled)
+    }
+
     suspend fun removeTrackedFolder(folderId: String) = withContext(Dispatchers.IO) {
+        val folder = trackedFolderDao.getFolderById(folderId)
+        if (folder != null) {
+            try {
+                val uri = Uri.parse(folder.treeUriString)
+                context.contentResolver.releasePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (ignored: Exception) {}
+        }
+        // Room cascade foreign key automatically deletes all child videos, playback progress, and watch history
+        // Storage files on device filesystem are 100% untouched and NEVER deleted.
         trackedFolderDao.deleteById(folderId)
+    }
+
+    suspend fun checkAndReconcilePermissions(): List<TrackedFolderItem> = withContext(Dispatchers.IO) {
+        val persisted = try {
+            context.contentResolver.persistedUriPermissions.filter { it.isReadPermission }.map { it.uri }.toSet()
+        } catch (e: Exception) {
+            emptySet<Uri>()
+        }
+
+        val folders = trackedFolderDao.getAllFolders()
+        for (folder in folders) {
+            val treeUri = try { Uri.parse(folder.treeUriString) } catch (e: Exception) { null }
+            val isGranted = if (treeUri != null && treeUri.scheme == "content") {
+                treeUri in persisted
+            } else {
+                folder.isPermissionGranted
+            }
+            if (isGranted != folder.isPermissionGranted) {
+                trackedFolderDao.updateFolderPermission(folder.id, isGranted)
+            }
+        }
+        getTrackedFolders()
+    }
+
+    suspend fun reGrantFolderPermission(folderId: String, newUri: Uri): List<VideoItem> = withContext(Dispatchers.IO) {
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                newUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            Log.w("VideoRepository", "Failed taking persistable permission for re-grant: ${e.message}")
+        }
+        val folder = trackedFolderDao.getFolderById(folderId)
+        val displayName = getDocumentDisplayName(context.contentResolver, newUri) ?: folder?.displayName ?: "Folder"
+        trackedFolderDao.updateFolderUriAndPermission(folderId, newUri.toString(), true)
+        trackedFolderDao.updateFolderMetadata(folderId, displayName, System.currentTimeMillis(), folder?.videoCount ?: 0)
+        rescanTrackedFolder(folderId)
     }
 
     suspend fun savePlaybackProgress(videoId: String, positionMs: Long, durationMs: Long, isCompleted: Boolean) = withContext(Dispatchers.IO) {

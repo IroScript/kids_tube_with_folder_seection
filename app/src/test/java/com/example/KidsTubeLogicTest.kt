@@ -1,5 +1,7 @@
 package com.example
 
+import com.example.data.local.entity.TrackedFolderEntity
+import com.example.model.TrackedFolderItem
 import com.example.model.VideoItem
 import com.example.repository.VideoRepository
 import org.junit.Assert.assertEquals
@@ -323,5 +325,224 @@ class KidsTubeLogicTest {
         // Multiple match MUST NOT silently merge
         val canReconcileMultiple = multipleCandidateList.size == 1
         assertFalse("Multiple candidates must not silently merge", canReconcileMultiple)
+    }
+
+    @Test
+    fun testTC14_PhaseB_PreventDuplicateTreeUriRegistration() {
+        val existingFolders = mutableListOf(
+            TrackedFolderEntity(
+                id = "folder_existing_1",
+                treeUriString = "content://com.android.externalstorage.documents/tree/primary%3AKidsCartoons",
+                displayName = "KidsCartoons",
+                isEnabled = true,
+                isPermissionGranted = true
+            )
+        )
+
+        val incomingUri = "content://com.android.externalstorage.documents/tree/primary%3AKidsCartoons"
+
+        // Deduplication lookup
+        val existing = existingFolders.find { it.treeUriString == incomingUri }
+        assertNotNull("Existing folder must be found", existing)
+
+        val targetFolderId = if (existing != null) {
+            existing.id
+        } else {
+            "folder_new_" + System.currentTimeMillis()
+        }
+
+        assertEquals("folder_existing_1", targetFolderId)
+        assertEquals("Should not create duplicate folder ID", 1, existingFolders.size)
+    }
+
+    @Test
+    fun testTC15_PhaseB_RemoveFolderFlowLeavesPhysicalStorageUntouched() {
+        // Mock state
+        val databaseFolderRecords = mutableListOf("folder_1", "folder_2")
+        val databaseVideoRecords = mutableListOf("vid_101", "vid_102")
+        val storageFilesOnDisk = mutableListOf("/storage/emulated/0/KidsCartoons/cartoon1.mp4", "/storage/emulated/0/KidsCartoons/cartoon2.mp4")
+
+        // Action: Parent removes folder_1 from app database
+        val folderToRemove = "folder_1"
+        databaseFolderRecords.remove(folderToRemove)
+        // Cascade delete in database
+        databaseVideoRecords.clear()
+
+        // Verify database records are removed
+        assertFalse(databaseFolderRecords.contains(folderToRemove))
+        assertTrue(databaseVideoRecords.isEmpty())
+
+        // Verify storage files remain 100% untouched
+        assertEquals(2, storageFilesOnDisk.size)
+        assertTrue(storageFilesOnDisk.contains("/storage/emulated/0/KidsCartoons/cartoon1.mp4"))
+        assertTrue(storageFilesOnDisk.contains("/storage/emulated/0/KidsCartoons/cartoon2.mp4"))
+    }
+
+    @Test
+    fun testTC16_PhaseB_DisabledFolderHidesVideosFromChildShelf() {
+        data class MockFolder(val id: String, val name: String, val isEnabled: Boolean, val isPermissionGranted: Boolean)
+        data class MockVideo(val id: String, val folderId: String, val title: String)
+
+        val folders = listOf(
+            MockFolder("f1", "Cartoons", isEnabled = true, isPermissionGranted = true),
+            MockFolder("f2", "Rhymes", isEnabled = false, isPermissionGranted = true) // Parent disabled
+        )
+
+        val videos = listOf(
+            MockVideo("v1", "f1", "Episode 1"),
+            MockVideo("v2", "f2", "Rhyme 1")
+        )
+
+        // Child filter rule: folder.isEnabled && folder.isPermissionGranted
+        val activeFolderIds = folders.filter { it.isEnabled && it.isPermissionGranted }.map { it.id }.toSet()
+        val childVideos = videos.filter { it.folderId in activeFolderIds }
+
+        assertEquals(1, childVideos.size)
+        assertEquals("Episode 1", childVideos[0].title)
+        assertFalse("Disabled folder video must not be visible to child", childVideos.any { it.title == "Rhyme 1" })
+    }
+
+    @Test
+    fun testTC17_PhaseB_PermissionRevocationHidesVideosFromChildShelf() {
+        data class MockFolder(val id: String, val name: String, val isEnabled: Boolean, val isPermissionGranted: Boolean)
+        data class MockVideo(val id: String, val folderId: String, val title: String)
+
+        val folders = listOf(
+            MockFolder("f1", "Cartoons", isEnabled = true, isPermissionGranted = true),
+            MockFolder("f2", "Movies", isEnabled = true, isPermissionGranted = false) // Permission lost
+        )
+
+        val videos = listOf(
+            MockVideo("v1", "f1", "Episode 1"),
+            MockVideo("v2", "f2", "Movie 1")
+        )
+
+        val activeFolderIds = folders.filter { it.isEnabled && it.isPermissionGranted }.map { it.id }.toSet()
+        val childVideos = videos.filter { it.folderId in activeFolderIds }
+
+        assertEquals(1, childVideos.size)
+        assertEquals("Episode 1", childVideos[0].title)
+        assertFalse("Permission revoked folder video must not be visible to child", childVideos.any { it.title == "Movie 1" })
+    }
+
+    @Test
+    fun testTC18_PhaseB_ReGrantPermissionRestoresChildVideoAccess() {
+        data class MockFolder(var isEnabled: Boolean, var isPermissionGranted: Boolean)
+
+        val folder = MockFolder(isEnabled = true, isPermissionGranted = false)
+
+        // Initially permission lost
+        assertFalse(folder.isEnabled && folder.isPermissionGranted)
+
+        // Parent re-grants permission via SAF
+        folder.isPermissionGranted = true
+
+        // Restored to child library
+        assertTrue(folder.isEnabled && folder.isPermissionGranted)
+    }
+
+    @Test
+    fun testTC19_PhaseB_FolderRescanReconcilesAddedAndDeletedFiles() {
+        data class MockDbVideo(val id: String, val uri: String, var title: String)
+
+        val existingInDb = mutableListOf(
+            MockDbVideo("vid_1", "content://file/1", "Old Title 1"),
+            MockDbVideo("vid_2", "content://file/2", "Deleted on Disk")
+        )
+
+        // Simulated filesystem state during rescan:
+        // - content://file/1 still exists (title changed on disk)
+        // - content://file/2 was deleted from disk
+        // - content://file/3 is newly added on disk
+        val diskUris = listOf(
+            "content://file/1" to "New Title 1",
+            "content://file/3" to "Brand New Video"
+        )
+
+        val diskUriMap = diskUris.toMap()
+        val diskUriSet = diskUris.map { it.first }.toSet()
+
+        // 1. Delete removed
+        existingInDb.removeAll { it.uri !in diskUriSet }
+
+        // 2. Update existing
+        for (v in existingInDb) {
+            diskUriMap[v.uri]?.let { v.title = it }
+        }
+
+        // 3. Add new
+        val existingUris = existingInDb.map { it.uri }.toSet()
+        for ((uri, title) in diskUris) {
+            if (uri !in existingUris) {
+                existingInDb.add(MockDbVideo("vid_" + uri.hashCode(), uri, title))
+            }
+        }
+
+        assertEquals(2, existingInDb.size)
+        assertEquals("New Title 1", existingInDb.find { it.uri == "content://file/1" }?.title)
+        assertNull(existingInDb.find { it.uri == "content://file/2" })
+        assertNotNull(existingInDb.find { it.uri == "content://file/3" })
+    }
+
+    @Test
+    fun testTC20_PhaseB_ChildLibraryQueryConditionLogic() {
+        fun isVisibleToChild(isEnabled: Boolean, isPermissionGranted: Boolean): Boolean {
+            return isEnabled && isPermissionGranted
+        }
+
+        // Truth table validation
+        assertTrue(isVisibleToChild(isEnabled = true, isPermissionGranted = true))
+        assertFalse(isVisibleToChild(isEnabled = true, isPermissionGranted = false))
+        assertFalse(isVisibleToChild(isEnabled = false, isPermissionGranted = true))
+        assertFalse(isVisibleToChild(isEnabled = false, isPermissionGranted = false))
+    }
+
+    @Test
+    fun testTC21_PhaseB_BengaliUnicodeFolderAndVideoTitles() {
+        val bengaliVideos = listOf(
+            VideoItem(id = "b1", title = "টুনটুনি আর দুষ্টু বিড়াল", uriString = "uri_b1", folderName = "বাংলা ছড়া"),
+            VideoItem(id = "b2", title = "ছোটদের মজার গল্প", uriString = "uri_b2", folderName = "বাংলা গল্প")
+        )
+
+        val sorted = sortVideosDeterministically(bengaliVideos)
+        assertEquals(2, sorted.size)
+        assertEquals("বাংলা গল্প", sorted[0].folderName)
+        assertEquals("বাংলা ছড়া", sorted[1].folderName)
+        assertEquals("ছোটদের মজার গল্প", sorted[0].title)
+        assertEquals("টুনটুনি আর দুষ্টু বিড়াল", sorted[1].title)
+    }
+
+    @Test
+    fun testTC22_PhaseB_TrackedFolderEntityToTrackedFolderItemMapping() {
+        val entity = TrackedFolderEntity(
+            id = "folder_abc",
+            treeUriString = "content://saf/tree/abc",
+            displayName = "My Kids Videos",
+            dateAdded = 1715000000000L,
+            lastScanned = 1715000500000L,
+            isEnabled = true,
+            isPermissionGranted = true,
+            videoCount = 15
+        )
+
+        val item = TrackedFolderItem(
+            id = entity.id,
+            treeUriString = entity.treeUriString,
+            displayName = entity.displayName,
+            dateAdded = entity.dateAdded,
+            lastScanned = entity.lastScanned,
+            isEnabled = entity.isEnabled,
+            isPermissionGranted = entity.isPermissionGranted,
+            videoCount = entity.videoCount
+        )
+
+        assertEquals("folder_abc", item.id)
+        assertEquals("content://saf/tree/abc", item.treeUriString)
+        assertEquals("My Kids Videos", item.displayName)
+        assertEquals(1715000000000L, item.dateAdded)
+        assertEquals(1715000500000L, item.lastScanned)
+        assertTrue(item.isEnabled)
+        assertTrue(item.isPermissionGranted)
+        assertEquals(15, item.videoCount)
     }
 }

@@ -22,5 +22,6 @@ data class TrackedFolderEntity(
     val dateAdded: Long = System.currentTimeMillis(),
     val lastScanned: Long = System.currentTimeMillis(),
     val isEnabled: Boolean = true,
+    val isPermissionGranted: Boolean = true,
     val videoCount: Int = 0
 )

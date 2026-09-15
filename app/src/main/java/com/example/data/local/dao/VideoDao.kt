@@ -58,6 +58,38 @@ interface VideoDao {
     """)
     fun getAllVideosWithDetailsFlow(): Flow<List<VideoWithDetails>>
 
+    @Query("""
+        SELECT 
+            v.id, v.folderId, v.uriString, v.fileName, v.displayTitle,
+            v.durationMs, v.sizeBytes, v.mimeType, v.lastModified, v.dateAdded,
+            v.youtubeId, v.isSample,
+            f.displayName AS folderDisplayName,
+            p.positionMs AS playbackPositionMs,
+            p.isCompleted AS isCompleted
+        FROM videos v
+        INNER JOIN tracked_folders f ON v.folderId = f.id
+        LEFT JOIN playback_progress p ON v.id = p.videoId
+        WHERE f.isEnabled = 1 AND f.isPermissionGranted = 1
+        ORDER BY COALESCE(f.displayName, 'All Videos') ASC, v.displayTitle ASC
+    """)
+    suspend fun getActiveVideosWithDetails(): List<VideoWithDetails>
+
+    @Query("""
+        SELECT 
+            v.id, v.folderId, v.uriString, v.fileName, v.displayTitle,
+            v.durationMs, v.sizeBytes, v.mimeType, v.lastModified, v.dateAdded,
+            v.youtubeId, v.isSample,
+            f.displayName AS folderDisplayName,
+            p.positionMs AS playbackPositionMs,
+            p.isCompleted AS isCompleted
+        FROM videos v
+        INNER JOIN tracked_folders f ON v.folderId = f.id
+        LEFT JOIN playback_progress p ON v.id = p.videoId
+        WHERE f.isEnabled = 1 AND f.isPermissionGranted = 1
+        ORDER BY COALESCE(f.displayName, 'All Videos') ASC, v.displayTitle ASC
+    """)
+    fun getActiveVideosWithDetailsFlow(): Flow<List<VideoWithDetails>>
+
     @Query("SELECT * FROM videos WHERE id = :id LIMIT 1")
     suspend fun getVideoById(id: String): VideoEntity?
 
@@ -101,6 +133,9 @@ interface VideoDao {
 
     @Query("DELETE FROM videos WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<String>)
+
+    @Query("DELETE FROM videos WHERE folderId = :folderId")
+    suspend fun deleteVideosByFolderId(folderId: String)
 
     @Query("DELETE FROM videos")
     suspend fun deleteAll()

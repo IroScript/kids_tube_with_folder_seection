@@ -6,6 +6,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.model.TrackedFolderItem
 import com.example.model.VideoItem
 import com.example.repository.VideoRepository
 import com.example.util.ThumbnailHelper
@@ -38,6 +39,7 @@ data class KidsTubeUiState(
     val isToddlerLockActive: Boolean = false,
     val selectedFolder: String? = null,
     val folders: List<String> = emptyList(),
+    val trackedFolders: List<TrackedFolderItem> = emptyList(),
     val screenTimerMinutes: Int? = null,
     val screenTimerRemainingSeconds: Long? = null,
     val isScreenTimeUp: Boolean = false,
@@ -63,12 +65,22 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
     private val playedVideoIds = mutableSetOf<String>()
 
     init {
+        observeTrackedFolders()
         loadVideos()
+    }
+
+    private fun observeTrackedFolders() {
+        viewModelScope.launch {
+            repository.getTrackedFolderItemsFlow().collect { folderItems ->
+                _uiState.update { it.copy(trackedFolders = folderItems) }
+            }
+        }
     }
 
     fun loadVideos() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, isPlaybackError = false, playbackErrorMessage = null) }
+            repository.checkAndReconcilePermissions()
             val list = repository.getSavedVideos()
             val folders = list.map { it.folderName }.distinct().sorted()
             val initialVideo = list.firstOrNull()
@@ -325,46 +337,61 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
     fun importFolder(treeUri: Uri) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
-            val newVideos = repository.scanDocumentTree(treeUri)
-            if (newVideos.isEmpty()) {
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        toastMessage = "No compatible videos found in folder"
-                    )
-                }
-                return@launch
-            }
-
-            val existing = _uiState.value.videos.toMutableList()
-            val existingUris = existing.map { it.uriString }.toSet()
-            val toAdd = newVideos.filterNot { it.uriString in existingUris }
-
-            existing.addAll(toAdd)
-            val sorted = repository.sortVideosDeterministically(existing)
-            repository.saveVideos(sorted)
-            val folders = sorted.map { it.folderName }.distinct().sorted()
-
-            val activePlaylist = if (_uiState.value.selectedFolder == null) {
-                sorted
-            } else {
-                sorted.filter { it.folderName == _uiState.value.selectedFolder || it.folderName.startsWith("${_uiState.value.selectedFolder} /") }
-            }
-
+            val newVideos = repository.addOrUpdateTrackedFolder(treeUri)
+            loadVideos()
             _uiState.update {
                 it.copy(
-                    videos = sorted,
-                    displayPlaylist = activePlaylist,
-                    folders = folders,
                     isLoading = false,
-                    toastMessage = "${toAdd.size} videos added from folder!"
+                    toastMessage = if (newVideos.isNotEmpty()) "${newVideos.size} active video(s) ready!" else "Folder indexed, but no compatible videos found"
                 )
             }
-            viewModelScope.launch(Dispatchers.IO) {
-                ThumbnailHelper.preloadThumbnails(getApplication(), sorted)
+        }
+    }
+
+    fun toggleFolderEnabled(folderId: String, isEnabled: Boolean) {
+        viewModelScope.launch {
+            repository.setFolderEnabled(folderId, isEnabled)
+            loadVideos()
+            _uiState.update {
+                it.copy(toastMessage = if (isEnabled) "Folder enabled for kids" else "Folder hidden from kids")
             }
-            if (toAdd.isNotEmpty() && _uiState.value.currentVideo == null) {
-                playVideo(toAdd.first())
+        }
+    }
+
+    fun removeTrackedFolder(folderId: String) {
+        viewModelScope.launch {
+            repository.removeTrackedFolder(folderId)
+            loadVideos()
+            _uiState.update {
+                it.copy(toastMessage = "Folder removed from library (storage files kept safe)")
+            }
+        }
+    }
+
+    fun rescanTrackedFolder(folderId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            val updatedVideos = repository.rescanTrackedFolder(folderId)
+            loadVideos()
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    toastMessage = "Folder rescanned (${updatedVideos.size} active videos)"
+                )
+            }
+        }
+    }
+
+    fun reGrantFolderPermission(folderId: String, newUri: Uri) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            val updated = repository.reGrantFolderPermission(folderId, newUri)
+            loadVideos()
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    toastMessage = "Permission restored! (${updated.size} active videos)"
+                )
             }
         }
     }
