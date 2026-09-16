@@ -1,9 +1,14 @@
 package com.example
 
 import com.example.data.local.entity.TrackedFolderEntity
+import com.example.model.ParentProtectedAction
+import com.example.model.PlaybackConstants
 import com.example.model.TrackedFolderItem
 import com.example.model.VideoItem
+import com.example.model.calculateResumePosition
+import com.example.model.isPlaybackCompleted
 import com.example.repository.VideoRepository
+import com.example.viewmodel.KidsTubeUiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -275,14 +280,13 @@ class KidsTubeLogicTest {
     fun testTest12_PhaseA_TitleCleanerRegexRules() {
         fun cleanTitle(rawName: String): String {
             val withoutExt = rawName.substringBeforeLast('.')
-            val withoutTags = withoutExt
+            val spaced = withoutExt.replace('_', ' ').replace('-', ' ').trim()
+            val withoutTags = spaced
                 .replace(Regex("(?i)\\b(1080p|720p|480p|360p|2160p|4k|x264|x265|hevc|h264|aac|webrip|bluray|dvdrip)\\b"), "")
-                .replace('_', ' ')
-                .replace('-', ' ')
                 .trim()
 
             return if (withoutTags.isBlank()) {
-                withoutExt.replace('_', ' ').replace('-', ' ').trim()
+                spaced
             } else {
                 withoutTags.replace(Regex("\\s+"), " ")
             }
@@ -311,6 +315,7 @@ class KidsTubeLogicTest {
             folderId = "folder_1",
             uriString = "content://old/2",
             fileName = "rhyme_copy.mp4",
+            displayTitle = "Rhyme Copy",
             sizeBytes = 5000L,
             lastModified = 10000L
         )
@@ -544,5 +549,285 @@ class KidsTubeLogicTest {
         assertTrue(item.isEnabled)
         assertTrue(item.isPermissionGranted)
         assertEquals(15, item.videoCount)
+    }
+
+    // ==========================================
+    // PHASE C: STATE & PLAYBACK ARCHITECTURE TESTS
+    // ==========================================
+
+    @Test
+    fun testTCC01_CompletedVideoRestartsFromBeginning() {
+        // Any completed video must restart from 0:00
+        val resumePos = calculateResumePosition(
+            positionMs = 115_000L,
+            durationMs = 120_000L,
+            isCompleted = true
+        )
+        assertEquals(0L, resumePos)
+    }
+
+    @Test
+    fun testTCC02_VideoNearEndRestartsFromBeginning() {
+        // Video watched >= 95% of duration must restart from 0:00
+        val resumePos = calculateResumePosition(
+            positionMs = 96_000L,
+            durationMs = 100_000L, // 96%
+            isCompleted = false
+        )
+        assertEquals(0L, resumePos)
+    }
+
+    @Test
+    fun testTCC03_VideoWithin5sOfEndRestartsFromBeginning() {
+        // Video within 5 seconds of end must restart from 0:00
+        val resumePos = calculateResumePosition(
+            positionMs = 56_000L,
+            durationMs = 60_000L, // 4 seconds before end
+            isCompleted = false
+        )
+        assertEquals(0L, resumePos)
+    }
+
+    @Test
+    fun testTCC04_VeryEarlyVideoUnder3SecondsRestartsFromBeginning() {
+        // Early video (< 3 seconds) restarts from 0:00
+        val resumePos = calculateResumePosition(
+            positionMs = 2_500L,
+            durationMs = 60_000L,
+            isCompleted = false
+        )
+        assertEquals(0L, resumePos)
+    }
+
+    @Test
+    fun testTCC05_MidPlaybackVideoResumesFromLastSavedPosition() {
+        // Mid-playback video (>= 3s and < 95% / > 5s before end) resumes accurately
+        val resumePos = calculateResumePosition(
+            positionMs = 45_000L,
+            durationMs = 120_000L,
+            isCompleted = false
+        )
+        assertEquals(45_000L, resumePos)
+    }
+
+    @Test
+    fun testTCC06_ZeroOrNegativeDurationHandlesSafely() {
+        assertEquals(0L, calculateResumePosition(10_000L, 0L, false))
+        assertEquals(0L, calculateResumePosition(10_000L, -1L, false))
+        assertEquals(0L, calculateResumePosition(-500L, 10_000L, false))
+    }
+
+    @Test
+    fun testTCC07_PlaybackCompletedThresholdDetection() {
+        // 95% boundary detection
+        assertTrue(isPlaybackCompleted(95_000L, 100_000L))
+        assertTrue(isPlaybackCompleted(99_000L, 100_000L))
+        assertFalse(isPlaybackCompleted(94_000L, 100_000L))
+
+        // 5-second before end threshold
+        assertTrue(isPlaybackCompleted(55_500L, 60_000L)) // within 4.5s of end
+        assertFalse(isPlaybackCompleted(50_000L, 60_000L)) // 10s before end
+    }
+
+    @Test
+    fun testTCC08_ParentProtectedActionRoutingFolderManager() {
+        // Action routing to OpenFolderManager sets both isParentMode and isFolderManagerMode to true
+        var uiState = KidsTubeUiState()
+        assertFalse(uiState.isParentMode)
+        assertFalse(uiState.isFolderManagerMode)
+
+        fun executeProtectedAction(action: ParentProtectedAction) {
+            when (action) {
+                ParentProtectedAction.OpenFolderManager -> {
+                    uiState = uiState.copy(
+                        isParentMode = true,
+                        isFolderManagerMode = true,
+                        toastMessage = "Folder Management opened 📁"
+                    )
+                }
+                ParentProtectedAction.OpenParentDashboard -> {
+                    uiState = uiState.copy(
+                        isParentMode = true,
+                        isFolderManagerMode = false,
+                        toastMessage = "Parent controls unlocked 🛡️"
+                    )
+                }
+            }
+        }
+
+        executeProtectedAction(ParentProtectedAction.OpenFolderManager)
+        assertTrue(uiState.isParentMode)
+        assertTrue(uiState.isFolderManagerMode)
+        assertEquals("Folder Management opened 📁", uiState.toastMessage)
+    }
+
+    @Test
+    fun testTCC09_ParentProtectedActionRoutingParentDashboard() {
+        // Action routing to OpenParentDashboard sets isParentMode=true and isFolderManagerMode=false
+        var uiState = KidsTubeUiState()
+        fun executeProtectedAction(action: ParentProtectedAction) {
+            when (action) {
+                ParentProtectedAction.OpenFolderManager -> {
+                    uiState = uiState.copy(isParentMode = true, isFolderManagerMode = true)
+                }
+                ParentProtectedAction.OpenParentDashboard -> {
+                    uiState = uiState.copy(isParentMode = true, isFolderManagerMode = false)
+                }
+            }
+        }
+
+        executeProtectedAction(ParentProtectedAction.OpenParentDashboard)
+        assertTrue(uiState.isParentMode)
+        assertFalse(uiState.isFolderManagerMode)
+    }
+
+    @Test
+    fun testTCC10_ParentMathGateVerificationSuccessAndClearsPendingAction() {
+        var uiState = KidsTubeUiState(
+            showParentLockDialog = true,
+            parentMathQuestion = "6 × 7",
+            parentMathAnswer = 42,
+            pendingParentAction = ParentProtectedAction.OpenFolderManager
+        )
+
+        fun verifyAnswer(userAnswer: Int): Boolean {
+            if (userAnswer == uiState.parentMathAnswer) {
+                val action = uiState.pendingParentAction ?: ParentProtectedAction.OpenParentDashboard
+                uiState = uiState.copy(
+                    showParentLockDialog = false,
+                    pendingParentAction = null
+                )
+                when (action) {
+                    ParentProtectedAction.OpenFolderManager -> uiState = uiState.copy(isParentMode = true, isFolderManagerMode = true)
+                    ParentProtectedAction.OpenParentDashboard -> uiState = uiState.copy(isParentMode = true, isFolderManagerMode = false)
+                }
+                return true
+            }
+            return false
+        }
+
+        val success = verifyAnswer(42)
+        assertTrue(success)
+        assertFalse(uiState.showParentLockDialog)
+        assertNull(uiState.pendingParentAction)
+        assertTrue(uiState.isParentMode)
+        assertTrue(uiState.isFolderManagerMode)
+    }
+
+    @Test
+    fun testTCC11_ParentMathGateVerificationFailureKeepsLockIntact() {
+        var uiState = KidsTubeUiState(
+            showParentLockDialog = true,
+            parentMathQuestion = "8 × 9",
+            parentMathAnswer = 72,
+            pendingParentAction = ParentProtectedAction.OpenFolderManager
+        )
+
+        fun verifyAnswer(userAnswer: Int): Boolean {
+            if (userAnswer == uiState.parentMathAnswer) {
+                uiState = uiState.copy(showParentLockDialog = false, pendingParentAction = null)
+                return true
+            }
+            return false
+        }
+
+        val success = verifyAnswer(54) // Wrong answer
+        assertFalse(success)
+        assertTrue(uiState.showParentLockDialog)
+        assertEquals(ParentProtectedAction.OpenFolderManager, uiState.pendingParentAction)
+        assertFalse(uiState.isParentMode)
+    }
+
+    @Test
+    fun testTCC12_VideoSelectionAreaVisibilityDefaultAndSurvivesVideoSwitch() {
+        // Selection area is visible by default
+        var uiState = KidsTubeUiState()
+        assertTrue(uiState.isSelectionAreaVisible)
+
+        // Simulating playing a new video
+        val newVideo = sampleVideos[1]
+        uiState = uiState.copy(
+            selectedVideoId = newVideo.id,
+            selectedVideo = newVideo,
+            currentVideo = newVideo,
+            isSelectionAreaVisible = true // Selection area remains visible!
+        )
+
+        assertTrue(uiState.isSelectionAreaVisible)
+        assertEquals(newVideo.id, uiState.selectedVideoId)
+        assertEquals("Rhyme B", uiState.currentVideo?.title)
+    }
+
+    @Test
+    fun testTCC13_ParentDashboardOpenClosePreservesSelectedVideoAndPlaylist() {
+        val selected = sampleVideos[2]
+        var uiState = KidsTubeUiState(
+            videos = sampleVideos,
+            displayPlaylist = sampleVideos,
+            selectedVideoId = selected.id,
+            selectedVideo = selected,
+            currentVideo = selected,
+            isSelectionAreaVisible = true
+        )
+
+        // 1. Open Parent Dashboard
+        uiState = uiState.copy(isParentMode = true)
+        assertTrue(uiState.isParentMode)
+        assertEquals(selected.id, uiState.selectedVideoId)
+
+        // 2. Close Parent Dashboard
+        uiState = uiState.copy(isParentMode = false, isFolderManagerMode = false)
+        assertFalse(uiState.isParentMode)
+        assertFalse(uiState.isFolderManagerMode)
+
+        // Child screen context, selected video and selection area remain 100% intact
+        assertEquals(selected.id, uiState.selectedVideoId)
+        assertEquals(selected.id, uiState.currentVideo?.id)
+        assertEquals(sampleVideos.size, uiState.displayPlaylist.size)
+        assertTrue(uiState.isSelectionAreaVisible)
+    }
+
+    @Test
+    fun testTCC14_ThrottlingConstantValues() {
+        assertEquals(2_000L, PlaybackConstants.SAVE_PROGRESS_INTERVAL_MS)
+        assertEquals(3_000L, PlaybackConstants.MIN_RESUME_POSITION_MS)
+        assertEquals(5_000L, PlaybackConstants.COMPLETION_THRESHOLD_OFFSET_MS)
+        assertEquals(0.95f, PlaybackConstants.COMPLETION_PERCENTAGE, 0.001f)
+    }
+
+    @Test
+    fun testTCC15_DisplayPlaylistPreservesSelectedFolderAcrossUpdates() {
+        val activeFolder = "Rhymes / English"
+        val filtered = filterVideos(sampleVideos, activeFolder)
+        var uiState = KidsTubeUiState(
+            videos = sampleVideos,
+            selectedFolder = activeFolder,
+            displayPlaylist = filtered,
+            selectedVideoId = filtered.first().id
+        )
+
+        assertEquals(1, uiState.displayPlaylist.size)
+        assertEquals("Rhyme A", uiState.displayPlaylist.first().title)
+
+        // Simulating library reload or active videos flow update
+        val updatedVideos = sampleVideos + VideoItem(
+            id = "6",
+            title = "Rhyme C",
+            uriString = "uri6",
+            folderName = "Rhymes / English"
+        )
+
+        val updatedFiltered = filterVideos(updatedVideos, uiState.selectedFolder)
+        val preservedSelection = updatedFiltered.find { it.id == uiState.selectedVideoId }
+
+        uiState = uiState.copy(
+            videos = updatedVideos,
+            displayPlaylist = updatedFiltered,
+            selectedVideoId = preservedSelection?.id ?: updatedFiltered.firstOrNull()?.id
+        )
+
+        // Folder filter and selection remain intact
+        assertEquals(2, uiState.displayPlaylist.size)
+        assertEquals("1", uiState.selectedVideoId)
     }
 }

@@ -61,6 +61,7 @@ fun KidsHeader(
     screenTimeRemainingSeconds: Long?,
     onToddlerLockClick: () -> Unit,
     onParentModeClick: () -> Unit,
+    onFolderManagementClick: () -> Unit = onParentModeClick,
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "star_spin")
@@ -176,13 +177,59 @@ fun KidsHeader(
                 }
             }
 
-            // Parental Controls & Folder Selection Button (Folder icon with attached Lock badge)
+            // Folder Management Button (Protected parent action)
             Surface(
                 shape = CircleShape,
                 color = if (isParentMode) KidsGreen else Color(0x33FFFFFF),
                 border = androidx.compose.foundation.BorderStroke(
                     1.5.dp,
                     if (isParentMode) KidsGreen else KidsAmber
+                ),
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .clickable { onFolderManagementClick() }
+                    .testTag("folder_management_button")
+            ) {
+                Box(
+                    modifier = Modifier.padding(4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Base Folder Icon
+                    Icon(
+                        imageVector = Icons.Filled.Folder,
+                        contentDescription = "Folder Management",
+                        tint = if (isParentMode) Color.Black else KidsAmber,
+                        modifier = Modifier.size(24.dp)
+                    )
+
+                    // Small Lock Badge attached at top-right
+                    Surface(
+                        shape = CircleShape,
+                        color = if (isParentMode) KidsYellow else KidsRed,
+                        modifier = Modifier
+                            .size(14.dp)
+                            .align(Alignment.TopEnd)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (isParentMode) Icons.Filled.LockOpen else Icons.Filled.Lock,
+                                contentDescription = null,
+                                tint = if (isParentMode) Color.Black else Color.White,
+                                modifier = Modifier.size(8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Parental Controls Settings Button
+            Surface(
+                shape = CircleShape,
+                color = if (isParentMode) KidsGreen else Color(0x33FFFFFF),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.5.dp,
+                    if (isParentMode) KidsGreen else KidsBlue
                 ),
                 modifier = Modifier
                     .size(46.dp)
@@ -194,15 +241,13 @@ fun KidsHeader(
                     modifier = Modifier.padding(4.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    // Base Folder Icon
                     Icon(
-                        imageVector = Icons.Filled.Folder,
-                        contentDescription = "Select Folders & Parental Controls",
-                        tint = if (isParentMode) Color.Black else KidsAmber,
+                        imageVector = Icons.Filled.Settings,
+                        contentDescription = "Parent Dashboard",
+                        tint = if (isParentMode) Color.Black else KidsBlue,
                         modifier = Modifier.size(24.dp)
                     )
 
-                    // Small Lock Badge attached at top-right
                     Surface(
                         shape = CircleShape,
                         color = if (isParentMode) KidsYellow else KidsRed,

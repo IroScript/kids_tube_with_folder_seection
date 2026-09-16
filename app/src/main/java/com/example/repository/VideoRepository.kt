@@ -908,6 +908,28 @@ class VideoRepository(private val context: Context) {
         return trackedFolderDao.getAllFoldersFlow()
     }
 
+    fun getActiveVideosFlow(): Flow<List<VideoItem>> {
+        return videoDao.getActiveVideosWithDetailsFlow().map { detailsList ->
+            val mapped = detailsList.map { details ->
+                VideoItem(
+                    id = details.id,
+                    title = details.displayTitle.ifBlank { details.fileName },
+                    uriString = details.uriString,
+                    folderName = details.folderDisplayName ?: "All Videos",
+                    youtubeId = details.youtubeId,
+                    isSample = details.isSample,
+                    durationMs = details.durationMs,
+                    mimeType = details.mimeType,
+                    sizeBytes = details.sizeBytes,
+                    dateAdded = details.dateAdded,
+                    playbackPositionMs = details.playbackPositionMs ?: 0L,
+                    isCompleted = details.isCompleted ?: false
+                )
+            }
+            sortVideosDeterministically(mapped)
+        }
+    }
+
     suspend fun setFolderEnabled(folderId: String, isEnabled: Boolean) = withContext(Dispatchers.IO) {
         trackedFolderDao.updateFolderEnabled(folderId, isEnabled)
     }
@@ -1039,14 +1061,13 @@ class VideoRepository(private val context: Context) {
 
     fun cleanTitle(rawName: String): String {
         val withoutExt = rawName.substringBeforeLast('.')
-        val withoutTags = withoutExt
+        val spaced = withoutExt.replace('_', ' ').replace('-', ' ').trim()
+        val withoutTags = spaced
             .replace(Regex("(?i)\\b(1080p|720p|480p|360p|2160p|4k|x264|x265|hevc|h264|aac|webrip|bluray|dvdrip)\\b"), "")
-            .replace('_', ' ')
-            .replace('-', ' ')
             .trim()
 
         return if (withoutTags.isBlank()) {
-            withoutExt.replace('_', ' ').replace('-', ' ').trim()
+            spaced
         } else {
             withoutTags.replace(Regex("\\s+"), " ")
         }

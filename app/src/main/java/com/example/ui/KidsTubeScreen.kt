@@ -306,14 +306,15 @@ fun KidsTubeScreen(
                     isToddlerLockActive = uiState.isToddlerLockActive,
                     screenTimeRemainingSeconds = uiState.screenTimerRemainingSeconds,
                     onToddlerLockClick = { viewModel.toggleToddlerLock() },
-                    onParentModeClick = { viewModel.requestParentMode() }
+                    onParentModeClick = { viewModel.requestParentMode() },
+                    onFolderManagementClick = { viewModel.requestFolderManagement() }
                 )
             }
         }
 
         // 3. Bottom Video Shelf, Playbar & Seekbar Overlay
         AnimatedVisibility(
-            visible = areOverlaysVisible && !uiState.isToddlerLockActive && !uiState.isScreenTimeUp,
+            visible = (areOverlaysVisible || uiState.isSelectionAreaVisible) && !uiState.isToddlerLockActive && !uiState.isScreenTimeUp,
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -329,159 +330,167 @@ fun KidsTubeScreen(
                     .padding(bottom = 8.dp)
             ) {
                 // Play button inline with Seekbar Row (Seekbar occupies flexible area: weight 1f)
-                if (uiState.currentVideo != null && uiState.durationMs > 0) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // Previous Button
-                        Surface(
-                            shape = CircleShape,
-                            color = Color(0x66000000),
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    viewModel.playPreviousVideo()
-                                    startHideTimer()
-                                },
-                                modifier = Modifier.testTag("prev_video_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.SkipPrevious,
-                                    contentDescription = "Previous Video",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
-                        }
-
-                        // Play / Pause Button
-                        Surface(
-                            shape = CircleShape,
-                            color = KidsRed,
-                            shadowElevation = 6.dp,
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    viewModel.togglePlayPause()
-                                    startHideTimer()
-                                },
-                                modifier = Modifier.testTag("play_pause_button")
-                            ) {
-                                Icon(
-                                    imageVector = if (uiState.isPlaying) Icons.Filled.PauseCircleFilled else Icons.Filled.PlayCircleFilled,
-                                    contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(32.dp)
-                                )
-                            }
-                        }
-
-                        // Next Button
-                        Surface(
-                            shape = CircleShape,
-                            color = Color(0x66000000),
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    viewModel.playNextVideo()
-                                    startHideTimer()
-                                },
-                                modifier = Modifier.testTag("next_video_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.SkipNext,
-                                    contentDescription = "Next Video",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
-                        }
-
-                        // Shuffle Toggle Indicator / Button
-                        Surface(
-                            shape = CircleShape,
-                            color = if (uiState.isShuffleMode) KidsPurple else Color(0x44000000),
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    viewModel.toggleShuffle()
-                                    startHideTimer()
-                                },
-                                modifier = Modifier.testTag("shuffle_toggle_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Shuffle,
-                                    contentDescription = "Toggle Shuffle",
-                                    tint = if (uiState.isShuffleMode) Color.White else Color.White.copy(alpha = 0.6f),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-
-                        // Current Position Time Text
-                        Text(
-                            text = formatTime(uiState.currentPositionMs),
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        // Seekbar (Takes 1-part proportional flexible area: weight 1f)
-                        Slider(
-                            value = if (uiState.durationMs > 0) {
-                                (uiState.currentPositionMs.toFloat() / uiState.durationMs).coerceIn(0f, 1f)
-                            } else 0f,
-                            onValueChange = { fraction ->
-                                if (uiState.durationMs > 0) {
-                                    val targetMs = (fraction * uiState.durationMs).toLong()
-                                    viewModel.seekTo(targetMs)
-                                    startHideTimer()
-                                }
-                            },
-                            colors = SliderDefaults.colors(
-                                thumbColor = KidsYellow,
-                                activeTrackColor = KidsRed,
-                                inactiveTrackColor = Color(0x66FFFFFF)
-                            ),
+                AnimatedVisibility(
+                    visible = areOverlaysVisible && !uiState.isToddlerLockActive && !uiState.isScreenTimeUp
+                ) {
+                    if (uiState.currentVideo != null && uiState.durationMs > 0) {
+                        Row(
                             modifier = Modifier
-                                .weight(1f)
-                                .testTag("video_seekbar_slider")
-                        )
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Previous Button
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0x66000000),
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        viewModel.playPreviousVideo()
+                                        startHideTimer()
+                                    },
+                                    modifier = Modifier.testTag("prev_video_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.SkipPrevious,
+                                        contentDescription = "Previous Video",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
 
-                        // Total Duration Time Text
-                        Text(
-                            text = formatTime(uiState.durationMs),
-                            color = Color.White.copy(alpha = 0.7f),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                            // Play / Pause Button
+                            Surface(
+                                shape = CircleShape,
+                                color = KidsRed,
+                                shadowElevation = 6.dp,
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        viewModel.togglePlayPause()
+                                        startHideTimer()
+                                    },
+                                    modifier = Modifier.testTag("play_pause_button")
+                                ) {
+                                    Icon(
+                                        imageVector = if (uiState.isPlaying) Icons.Filled.PauseCircleFilled else Icons.Filled.PlayCircleFilled,
+                                        contentDescription = if (uiState.isPlaying) "Pause" else "Play",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+                            }
+
+                            // Next Button
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0x66000000),
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        viewModel.playNextVideo()
+                                        startHideTimer()
+                                    },
+                                    modifier = Modifier.testTag("next_video_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.SkipNext,
+                                        contentDescription = "Next Video",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+
+                            // Shuffle Toggle Indicator / Button
+                            Surface(
+                                shape = CircleShape,
+                                color = if (uiState.isShuffleMode) KidsPurple else Color(0x44000000),
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        viewModel.toggleShuffle()
+                                        startHideTimer()
+                                    },
+                                    modifier = Modifier.testTag("shuffle_toggle_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Shuffle,
+                                        contentDescription = "Toggle Shuffle",
+                                        tint = if (uiState.isShuffleMode) Color.White else Color.White.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+
+                            // Current Position Time Text
+                            Text(
+                                text = formatTime(uiState.currentPositionMs),
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+
+                            // Seekbar (Takes 1-part proportional flexible area: weight 1f)
+                            Slider(
+                                value = if (uiState.durationMs > 0) {
+                                    (uiState.currentPositionMs.toFloat() / uiState.durationMs).coerceIn(0f, 1f)
+                                } else 0f,
+                                onValueChange = { fraction ->
+                                    if (uiState.durationMs > 0) {
+                                        val targetMs = (fraction * uiState.durationMs).toLong()
+                                        viewModel.seekTo(targetMs)
+                                        startHideTimer()
+                                    }
+                                },
+                                colors = SliderDefaults.colors(
+                                    thumbColor = KidsYellow,
+                                    activeTrackColor = KidsRed,
+                                    inactiveTrackColor = Color(0x66FFFFFF)
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("video_seekbar_slider")
+                            )
+
+                            // Total Duration Time Text
+                            Text(
+                                text = formatTime(uiState.durationMs),
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
 
                 // Horizontal Video Carousel Shelf (Directly underneath Seekbar)
-                VideoShelf(
-                    videos = stablePlaylist,
-                    allVideos = uiState.videos,
-                    currentVideo = stableCurrentVideo,
-                    folders = stableFolders,
-                    selectedFolder = stableSelectedFolder,
-                    onSelectFolder = {
-                        viewModel.filterByFolder(it)
-                        startHideTimer()
-                    },
-                    onSelectVideo = {
-                        viewModel.playVideo(it)
-                        startHideTimer()
-                    }
-                )
+                AnimatedVisibility(
+                    visible = uiState.isSelectionAreaVisible && !uiState.isToddlerLockActive && !uiState.isScreenTimeUp
+                ) {
+                    VideoShelf(
+                        videos = stablePlaylist,
+                        allVideos = uiState.videos,
+                        currentVideo = stableCurrentVideo,
+                        folders = stableFolders,
+                        selectedFolder = stableSelectedFolder,
+                        onSelectFolder = {
+                            viewModel.filterByFolder(it)
+                            startHideTimer()
+                        },
+                        onSelectVideo = {
+                            viewModel.playVideo(it)
+                            startHideTimer()
+                        }
+                    )
+                }
             }
         }
 
@@ -508,6 +517,7 @@ fun KidsTubeScreen(
                 isShuffleMode = uiState.isShuffleMode,
                 screenTimerMinutes = uiState.screenTimerMinutes,
                 trackedFolders = uiState.trackedFolders,
+                isFolderManagerMode = uiState.isFolderManagerMode,
                 onImportFolder = { viewModel.importFolder(it) },
                 onImportFiles = { viewModel.importUris(it, context) },
                 onScanDevice = { viewModel.scanDeviceVideos() },

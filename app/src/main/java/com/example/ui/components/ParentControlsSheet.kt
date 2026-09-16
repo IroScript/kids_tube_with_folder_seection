@@ -63,6 +63,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -112,11 +113,18 @@ fun ParentControlsSheet(
     onRemoveFolder: (String) -> Unit = {},
     onRescanFolder: (String) -> Unit = {},
     onReGrantFolderPermission: (String, Uri) -> Unit = { _, _ -> },
+    isFolderManagerMode: Boolean = false,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val lazyListState = rememberLazyListState()
+
+    LaunchedEffect(isFolderManagerMode) {
+        if (isFolderManagerMode) {
+            lazyListState.scrollToItem(0)
+        }
+    }
 
     // Disable dragging dismiss and ensure dialog only closes on explicit Cross / Done button click
     val sheetState = rememberModalBottomSheetState(
@@ -271,6 +279,29 @@ fun ParentControlsSheet(
             HorizontalDivider(color = Color(0xFF2B2E42))
             Spacer(modifier = Modifier.height(10.dp))
 
+            if (isFolderManagerMode) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = KidsOrange.copy(alpha = 0.2f),
+                    border = BorderStroke(1.5.dp, KidsOrange),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = KidsOrange, modifier = Modifier.size(24.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text("Folder Management Active 📁", fontWeight = FontWeight.Bold, color = KidsOrange, fontSize = 14.sp)
+                            Text("Add, toggle or remove child-safe video folders directly.", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+
             // Scroll Guidance Hint Banner
             Surface(
                 shape = RoundedCornerShape(12.dp),
@@ -348,6 +379,7 @@ fun ParentControlsSheet(
                             Card(
                                 shape = RoundedCornerShape(18.dp),
                                 colors = CardDefaults.cardColors(containerColor = Color(0xFF202334)),
+                                border = if (isFolderManagerMode) BorderStroke(2.dp, KidsOrange) else null,
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Column(modifier = Modifier.padding(14.dp)) {
