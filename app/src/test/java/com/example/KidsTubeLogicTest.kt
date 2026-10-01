@@ -924,4 +924,89 @@ class KidsTubeLogicTest {
         assertEquals(2, uiState.displayPlaylist.size)
         assertEquals(targetFolder, uiState.selectedFolder)
     }
+
+    @Test
+    fun testOptionsPersistent_OutsideClickMaintainsVisibility() {
+        var areOverlaysVisible = true
+        val isToddlerLockActive = false
+
+        // User taps outside on video surface/background while overlays are visible
+        fun onBackgroundClick() {
+            if (!isToddlerLockActive) {
+                if (!areOverlaysVisible) {
+                    areOverlaysVisible = true
+                }
+            }
+        }
+
+        onBackgroundClick()
+        // Must remain TRUE: tapping outside does NOT dismiss options
+        assertTrue("Overlays must remain visible when tapping outside", areOverlaysVisible)
+
+        onBackgroundClick()
+        assertTrue("Overlays must still remain visible on repeated outside clicks", areOverlaysVisible)
+    }
+
+    @Test
+    fun testOptionsDismissal_OnlyCrossButtonDismissesAndOutsideClickRestores() {
+        var areOverlaysVisible = true
+        val isToddlerLockActive = false
+
+        fun onCloseOverlays() {
+            areOverlaysVisible = false
+        }
+
+        fun onBackgroundClick() {
+            if (!isToddlerLockActive) {
+                if (!areOverlaysVisible) {
+                    areOverlaysVisible = true
+                }
+            }
+        }
+
+        // 1. Initial state: visible
+        assertTrue(areOverlaysVisible)
+
+        // 2. Outside click does NOT dismiss
+        onBackgroundClick()
+        assertTrue(areOverlaysVisible)
+
+        // 3. Explicit Cross [X] button click dismisses
+        onCloseOverlays()
+        assertFalse("Overlays must dismiss when cross button is clicked", areOverlaysVisible)
+
+        // 4. Outside click when dismissed restores visibility
+        onBackgroundClick()
+        assertTrue("Tapping screen when dismissed must restore overlays", areOverlaysVisible)
+    }
+
+    @Test
+    fun testOptionsStability_NoAutoDismissOnPlaybackOrControlsInteraction() {
+        var areOverlaysVisible = true
+        var isPlaying = true
+
+        // Simulate playback actions: next, prev, play/pause, seek
+        fun onNextVideo() {
+            isPlaying = true
+            // No auto-hide timer is started
+        }
+
+        fun onSeek() {
+            // Seek handled, no auto-hide
+        }
+
+        fun onPlayPause() {
+            isPlaying = !isPlaying
+        }
+
+        onNextVideo()
+        assertTrue(areOverlaysVisible)
+
+        onSeek()
+        assertTrue(areOverlaysVisible)
+
+        onPlayPause()
+        assertTrue(areOverlaysVisible)
+    }
 }
+

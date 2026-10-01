@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PauseCircleFilled
 import androidx.compose.material.icons.filled.PlayCircleFilled
@@ -101,23 +102,10 @@ fun KidsTubeScreen(
     val stableSelectedFolder by remember { derivedStateOf { uiState.selectedFolder } }
 
     var areOverlaysVisible by remember { mutableStateOf(true) }
-    var hideJob by remember { mutableStateOf<Job?>(null) }
 
-    fun startHideTimer() {
-        hideJob?.cancel()
-        if (uiState.isParentMode || uiState.isToddlerLockActive || !uiState.isPlaying) return
-        hideJob = coroutineScope.launch {
-            delay(10000)
-            areOverlaysVisible = false
-        }
-    }
-
-    LaunchedEffect(uiState.isPlaying, uiState.isParentMode, uiState.isToddlerLockActive) {
+    LaunchedEffect(uiState.isPlaying, uiState.isParentMode) {
         if (uiState.isParentMode || !uiState.isPlaying) {
             areOverlaysVisible = true
-            hideJob?.cancel()
-        } else if (uiState.isPlaying && !uiState.isToddlerLockActive) {
-            startHideTimer()
         }
     }
 
@@ -137,11 +125,10 @@ fun KidsTubeScreen(
                 indication = null
             ) {
                 if (!uiState.isToddlerLockActive) {
-                    areOverlaysVisible = !areOverlaysVisible
-                    if (areOverlaysVisible) {
-                        startHideTimer()
-                    } else {
-                        hideJob?.cancel()
+                    // "Baire click korleo option gulo jaabe naa, only cross button e click korle jaabe"
+                    // Clicking outside keeps options persistent; tapping only reveals them if previously closed
+                    if (!areOverlaysVisible) {
+                        areOverlaysVisible = true
                     }
                 }
             }
@@ -311,14 +298,15 @@ fun KidsTubeScreen(
                     screenTimeRemainingSeconds = uiState.screenTimerRemainingSeconds,
                     onToddlerLockClick = { viewModel.toggleToddlerLock() },
                     onParentModeClick = { viewModel.requestParentMode() },
-                    onFolderManagementClick = { viewModel.requestFolderManagement() }
+                    onFolderManagementClick = { viewModel.requestFolderManagement() },
+                    onCloseOverlays = { areOverlaysVisible = false }
                 )
             }
         }
 
         // 3. Bottom Video Shelf, Playbar & Seekbar Overlay
         AnimatedVisibility(
-            visible = (areOverlaysVisible || uiState.isSelectionAreaVisible) && !uiState.isToddlerLockActive && !uiState.isScreenTimeUp,
+            visible = areOverlaysVisible && !uiState.isToddlerLockActive && !uiState.isScreenTimeUp,
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -358,7 +346,6 @@ fun KidsTubeScreen(
                                 IconButton(
                                     onClick = {
                                         viewModel.playPreviousVideo()
-                                        startHideTimer()
                                     },
                                     modifier = Modifier.testTag("prev_video_button")
                                 ) {
@@ -381,7 +368,6 @@ fun KidsTubeScreen(
                                 IconButton(
                                     onClick = {
                                         viewModel.togglePlayPause()
-                                        startHideTimer()
                                     },
                                     modifier = Modifier.testTag("play_pause_button")
                                 ) {
@@ -403,7 +389,6 @@ fun KidsTubeScreen(
                                 IconButton(
                                     onClick = {
                                         viewModel.playNextVideo()
-                                        startHideTimer()
                                     },
                                     modifier = Modifier.testTag("next_video_button")
                                 ) {
@@ -425,7 +410,6 @@ fun KidsTubeScreen(
                                 IconButton(
                                     onClick = {
                                         viewModel.toggleShuffle()
-                                        startHideTimer()
                                     },
                                     modifier = Modifier.testTag("shuffle_toggle_button")
                                 ) {
@@ -455,7 +439,6 @@ fun KidsTubeScreen(
                                     if (uiState.durationMs > 0) {
                                         val targetMs = (fraction * uiState.durationMs).toLong()
                                         viewModel.seekTo(targetMs)
-                                        startHideTimer()
                                     }
                                 },
                                 colors = SliderDefaults.colors(
@@ -475,6 +458,27 @@ fun KidsTubeScreen(
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
                             )
+
+                            // Close Options Button on Controls Row
+                            Surface(
+                                shape = CircleShape,
+                                color = KidsRed.copy(alpha = 0.85f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White),
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .clickable { areOverlaysVisible = false }
+                                    .testTag("close_shelf_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Close,
+                                        contentDescription = "Close Options",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -494,7 +498,6 @@ fun KidsTubeScreen(
                         },
                         onSelectVideo = {
                             viewModel.playVideo(it)
-                            startHideTimer()
                         }
                     )
                 }

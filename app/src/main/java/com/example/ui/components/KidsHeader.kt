@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Lock
@@ -62,6 +63,7 @@ fun KidsHeader(
     onToddlerLockClick: () -> Unit,
     onParentModeClick: () -> Unit,
     onFolderManagementClick: () -> Unit = onParentModeClick,
+    onCloseOverlays: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "star_spin")
@@ -264,6 +266,27 @@ fun KidsHeader(
                             )
                         }
                     }
+                }
+            }
+
+            // Close / Dismiss Overlays Button (Explicit Cross [X] button)
+            Surface(
+                shape = CircleShape,
+                color = KidsRed,
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, Color.White),
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .clickable { onCloseOverlays() }
+                    .testTag("close_options_button")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Close Options",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
             }
         }
