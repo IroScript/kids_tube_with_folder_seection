@@ -58,7 +58,8 @@ data class KidsTubeUiState(
     val toastMessage: String? = null,
     val playTrigger: Long = 0L,
     val seekRequestMs: Long? = null,
-    val pendingResumePositionMs: Long? = null
+    val pendingResumePositionMs: Long? = null,
+    val isSessionUnlocked: Boolean = false
 )
 
 class KidsTubeViewModel(application: Application) : AndroidViewModel(application) {
@@ -67,6 +68,7 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
     private val _uiState = MutableStateFlow(KidsTubeUiState())
     val uiState: StateFlow<KidsTubeUiState> = _uiState.asStateFlow()
 
+    private val currentSessionId: String = java.util.UUID.randomUUID().toString()
     private var screenTimerJob: Job? = null
 
     // Navigation history stack for Previous button
@@ -76,9 +78,18 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
     private var lastSaveProgressTimestamp: Long = 0L
 
     init {
+        checkSessionUnlockState()
         observeTrackedFolders()
         observeActiveVideosFlow()
         loadVideos()
+    }
+
+    private fun checkSessionUnlockState() {
+        viewModelScope.launch {
+            if (repository.isSessionUnlocked(currentSessionId)) {
+                _uiState.update { it.copy(isSessionUnlocked = true) }
+            }
+        }
     }
 
     private fun observeTrackedFolders() {
@@ -375,19 +386,27 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun requestProtectedAction(action: ParentProtectedAction) {
-        if (_uiState.value.isParentMode) {
+        if (_uiState.value.isParentMode || _uiState.value.isSessionUnlocked) {
             executeProtectedAction(action)
             return
         }
-        val a = Random.nextInt(3, 9)
-        val b = Random.nextInt(3, 9)
-        _uiState.update {
-            it.copy(
-                pendingParentAction = action,
-                showParentLockDialog = true,
-                parentMathQuestion = "$a × $b",
-                parentMathAnswer = a * b
-            )
+        viewModelScope.launch {
+            if (repository.isSessionUnlocked(currentSessionId)) {
+                _uiState.update { it.copy(isSessionUnlocked = true) }
+                executeProtectedAction(action)
+                return@launch
+            }
+
+            val a = Random.nextInt(3, 9)
+            val b = Random.nextInt(3, 9)
+            _uiState.update {
+                it.copy(
+                    pendingParentAction = action,
+                    showParentLockDialog = true,
+                    parentMathQuestion = "$a × $b",
+                    parentMathAnswer = a * b
+                )
+            }
         }
     }
 
@@ -415,8 +434,12 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
                 it.copy(
                     showParentLockDialog = false,
                     pendingParentAction = null,
-                    isToddlerLockActive = false
+                    isToddlerLockActive = false,
+                    isSessionUnlocked = true
                 )
+            }
+            viewModelScope.launch(Dispatchers.IO) {
+                repository.recordSessionUnlock(currentSessionId)
             }
             executeProtectedAction(action)
             return true
@@ -501,18 +524,11 @@ class KidsTubeViewModel(application: Application) : AndroidViewModel(application
 
     fun filterByFolder(folder: String?) {
         val filtered = getFilteredVideos(selectedFolder = folder)
-        val current = _uiState.value.currentVideo
-        val isCurrentInFiltered = current != null && filtered.any { it.id == current.id }
-
         _uiState.update {
             it.copy(
                 selectedFolder = folder,
                 displayPlaylist = filtered
             )
-        }
-
-        if (filtered.isNotEmpty() && !isCurrentInFiltered) {
-            playVideo(filtered.first())
         }
     }
 

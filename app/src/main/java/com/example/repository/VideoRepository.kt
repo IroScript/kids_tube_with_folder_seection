@@ -12,6 +12,8 @@ import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
+import com.example.data.api.SessionApiService
+import com.example.data.api.LocalSessionApiServiceImpl
 import com.example.data.local.KidsTubeDatabase
 import com.example.data.local.entity.PlaybackProgressEntity
 import com.example.data.local.entity.TrackedFolderEntity
@@ -38,6 +40,7 @@ class VideoRepository(private val context: Context) {
     private val videoDao = database.videoDao()
     private val playbackProgressDao = database.playbackProgressDao()
     private val watchHistoryDao = database.watchHistoryDao()
+    private val sessionApiService: SessionApiService = LocalSessionApiServiceImpl(database)
 
     companion object {
         private const val KEY_VIDEOS = "kids_videos_json"
@@ -1071,5 +1074,17 @@ class VideoRepository(private val context: Context) {
         } else {
             withoutTags.replace(Regex("\\s+"), " ")
         }
+    }
+
+    suspend fun recordSessionUnlock(sessionId: String) {
+        sessionApiService.recordSessionUnlock(sessionId)
+    }
+
+    suspend fun isSessionUnlocked(sessionId: String): Boolean {
+        return sessionApiService.isSessionUnlocked(sessionId)
+    }
+
+    suspend fun clearSessionUnlock(sessionId: String) {
+        sessionApiService.clearSession(sessionId)
     }
 }

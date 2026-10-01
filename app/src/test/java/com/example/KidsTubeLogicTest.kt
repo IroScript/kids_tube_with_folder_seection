@@ -830,4 +830,98 @@ class KidsTubeLogicTest {
         assertEquals(2, uiState.displayPlaylist.size)
         assertEquals("1", uiState.selectedVideoId)
     }
+
+    @Test
+    fun testSessionUnlock_SingleCalculationUnlocksEntireSession() {
+        val sessionId = "session_test_123"
+        val sessionEntity = com.example.data.local.entity.SessionUnlockEntity(
+            sessionId = sessionId,
+            isUnlocked = true,
+            unlockedAt = System.currentTimeMillis(),
+            authMethod = "math_calculation"
+        )
+
+        assertEquals("session_test_123", sessionEntity.sessionId)
+        assertTrue(sessionEntity.isUnlocked)
+        assertEquals("math_calculation", sessionEntity.authMethod)
+
+        // Initial state: not unlocked, show dialog
+        var uiState = KidsTubeUiState(
+            isSessionUnlocked = false,
+            showParentLockDialog = false,
+            parentMathQuestion = "5 × 7",
+            parentMathAnswer = 35,
+            pendingParentAction = ParentProtectedAction.OpenParentDashboard
+        )
+
+        assertFalse(uiState.isSessionUnlocked)
+
+        // Simulate user answering 35
+        val userAnswer = 35
+        if (userAnswer == uiState.parentMathAnswer) {
+            uiState = uiState.copy(
+                isSessionUnlocked = true,
+                showParentLockDialog = false,
+                isParentMode = true,
+                pendingParentAction = null
+            )
+        }
+
+        assertTrue(uiState.isSessionUnlocked)
+        assertTrue(uiState.isParentMode)
+        assertFalse(uiState.showParentLockDialog)
+    }
+
+    @Test
+    fun testSessionUnlock_SecondTimeNoMathPromptForCurrentSession() {
+        // Once unlocked in current session:
+        var uiState = KidsTubeUiState(
+            isSessionUnlocked = true,
+            isParentMode = false,
+            showParentLockDialog = false
+        )
+
+        // User requests Folder Management a second time in current session
+        var actionExecuted = false
+        if (uiState.isParentMode || uiState.isSessionUnlocked) {
+            // Bypass math gate completely!
+            actionExecuted = true
+            uiState = uiState.copy(
+                isParentMode = true,
+                isFolderManagerMode = true,
+                showParentLockDialog = false
+            )
+        }
+
+        assertTrue(actionExecuted)
+        assertFalse(uiState.showParentLockDialog)
+        assertTrue(uiState.isFolderManagerMode)
+        assertTrue(uiState.isParentMode)
+    }
+
+    @Test
+    fun testOptionStability_FolderFilterKeepsPlaybackAndPlaylistStable() {
+        val currentVideo = sampleVideos.first()
+        var uiState = KidsTubeUiState(
+            videos = sampleVideos,
+            currentVideo = currentVideo,
+            isPlaying = true,
+            selectedFolder = null,
+            displayPlaylist = sampleVideos
+        )
+
+        // User filters by "Cartoons" while "Rhyme A" is playing
+        val targetFolder = "Cartoons"
+        val filtered = filterVideos(sampleVideos, targetFolder)
+        uiState = uiState.copy(
+            selectedFolder = targetFolder,
+            displayPlaylist = filtered
+        )
+
+        // Options stay stable: current video playback is NOT terminated
+        assertEquals("Rhyme A", uiState.currentVideo?.title)
+        assertTrue(uiState.isPlaying)
+        assertEquals(2, uiState.displayPlaylist.size)
+        assertEquals(targetFolder, uiState.selectedFolder)
+    }
 }

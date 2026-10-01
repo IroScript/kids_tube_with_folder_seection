@@ -105,15 +105,15 @@ fun KidsTubeScreen(
 
     fun startHideTimer() {
         hideJob?.cancel()
-        if (uiState.isParentMode || uiState.isToddlerLockActive) return
+        if (uiState.isParentMode || uiState.isToddlerLockActive || !uiState.isPlaying) return
         hideJob = coroutineScope.launch {
-            delay(3500)
+            delay(10000)
             areOverlaysVisible = false
         }
     }
 
     LaunchedEffect(uiState.isPlaying, uiState.isParentMode, uiState.isToddlerLockActive) {
-        if (uiState.isParentMode) {
+        if (uiState.isParentMode || !uiState.isPlaying) {
             areOverlaysVisible = true
             hideJob?.cancel()
         } else if (uiState.isPlaying && !uiState.isToddlerLockActive) {
@@ -295,6 +295,10 @@ fun KidsTubeScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { /* Consume touch events so header clicks don't toggle background */ }
                     .background(
                         Brush.verticalGradient(
                             listOf(Color(0xEE000000), Color(0x88000000), Color.Transparent)
@@ -322,6 +326,10 @@ fun KidsTubeScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { /* Consume touch events so controls/shelf clicks don't toggle background */ }
                     .background(
                         Brush.verticalGradient(
                             listOf(Color.Transparent, Color(0xAA000000), Color(0xF5000000))
@@ -483,7 +491,6 @@ fun KidsTubeScreen(
                         selectedFolder = stableSelectedFolder,
                         onSelectFolder = {
                             viewModel.filterByFolder(it)
-                            startHideTimer()
                         },
                         onSelectVideo = {
                             viewModel.playVideo(it)
