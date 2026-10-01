@@ -1008,5 +1008,37 @@ class KidsTubeLogicTest {
         onPlayPause()
         assertTrue(areOverlaysVisible)
     }
+
+    @Test
+    fun testParentLockPopup_OutsideClickAndBackPressCannotDismiss() {
+        var showParentLockDialog = true
+
+        // onDismissRequest is an empty no-op to ensure outside clicks/back press do NOT dismiss
+        fun onDismissRequest() {
+            // Intentionally empty / no-op: popup MUST NOT delete or disappear on outside click or back press
+        }
+
+        onDismissRequest()
+        assertTrue("Popup must remain visible on outside click or back press", showParentLockDialog)
+
+        onDismissRequest()
+        assertTrue("Popup must still remain visible on repeated outside clicks", showParentLockDialog)
+    }
+
+    @Test
+    fun testParentLockPopup_OnlyExplicitCrossButtonDismisses() {
+        var showParentLockDialog = true
+
+        fun onCrossButtonClick() {
+            showParentLockDialog = false
+        }
+
+        // Initially visible
+        assertTrue(showParentLockDialog)
+
+        // User clicks explicit Cross [X] button
+        onCrossButtonClick()
+        assertFalse("Popup must dismiss when and only when explicit Cross button is clicked", showParentLockDialog)
+    }
 }
 

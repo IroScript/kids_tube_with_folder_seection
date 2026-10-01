@@ -55,6 +55,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -207,6 +208,7 @@ fun ParentControlsSheet(
             // User MUST click the Cross [X] button or the Done button to close.
         },
         sheetState = sheetState,
+        properties = ModalBottomSheetDefaults.properties(shouldDismissOnBackPress = false),
         containerColor = Color(0xFF161824),
         contentColor = Color.White,
         dragHandle = null

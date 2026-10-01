@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Backspace
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -60,37 +61,66 @@ fun ParentLockDialog(
     var isError by remember { mutableStateOf(false) }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(dismissOnClickOutside = false),
+        onDismissRequest = {
+            // Intentionally empty: Window MUST NOT delete or disappear into thin air on outside click or back press.
+            // User MUST click the explicit Cross [X] button or solve math equation to dismiss.
+        },
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false
+        ),
         shape = RoundedCornerShape(24.dp),
         containerColor = Color(0xFF1B1D2A),
         title = {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        shape = CircleShape,
+                        color = KidsRed.copy(alpha = 0.2f),
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.Lock,
+                                contentDescription = "Parent Gate",
+                                tint = KidsRed,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Parents Only! 🔐",
+                        color = Color.White,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 19.sp
+                    )
+                }
+
+                // Explicit Cross [X] Close Button (ONLY way to dismiss popup without unlocking)
                 Surface(
                     shape = CircleShape,
-                    color = KidsRed.copy(alpha = 0.2f),
-                    modifier = Modifier.size(36.dp)
+                    color = KidsRed.copy(alpha = 0.85f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White),
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .clickable { onDismiss() }
+                        .testTag("close_parent_lock_dialog_button")
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.Filled.Lock,
-                            contentDescription = "Parent Gate",
-                            tint = KidsRed,
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Close",
+                            tint = Color.White,
                             modifier = Modifier.size(20.dp)
                         )
                     }
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Parents Only! 🔐",
-                    color = Color.White,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 20.sp
-                )
             }
         },
         text = {
@@ -266,12 +296,22 @@ fun ParentLockDialog(
             }
         },
         dismissButton = {
-            TextButton(
+            Button(
                 onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF353952)),
                 shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.height(42.dp)
+                modifier = Modifier
+                    .height(42.dp)
+                    .testTag("cancel_parent_lock_dialog_button")
             ) {
-                Text("Cancel", color = Color.White.copy(alpha = 0.7f))
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Cancel", color = Color.White, fontWeight = FontWeight.Bold)
             }
         }
     )
