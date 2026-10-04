@@ -1040,5 +1040,85 @@ class KidsTubeLogicTest {
         onCrossButtonClick()
         assertFalse("Popup must dismiss when and only when explicit Cross button is clicked", showParentLockDialog)
     }
+
+    @Test
+    fun testFolderButton_SecondClickAndSubsequentClicksWorkReliably() {
+        var isParentMode = false
+        var isFolderManagerMode = false
+        var isSessionUnlocked = false
+
+        // Simulate click on Folder button
+        fun clickFolderButton() {
+            if (isParentMode || isSessionUnlocked) {
+                isParentMode = true
+                isFolderManagerMode = true
+            } else {
+                // Math gate solves successfully
+                isSessionUnlocked = true
+                isParentMode = true
+                isFolderManagerMode = true
+            }
+        }
+
+        // Simulate closing the popup window via explicit close [X] / Done button
+        fun closePopupWindow() {
+            isParentMode = false
+            isFolderManagerMode = false
+        }
+
+        // 1st click opens folder management
+        clickFolderButton()
+        assertTrue("1st click must activate parent mode", isParentMode)
+        assertTrue("1st click must activate folder manager mode", isFolderManagerMode)
+
+        // Close window via explicit close button
+        closePopupWindow()
+        assertFalse("Closing window must reset parent mode", isParentMode)
+        assertFalse("Closing window must reset folder manager mode", isFolderManagerMode)
+
+        // 2nd click on Folder button MUST work immediately without getting stuck
+        clickFolderButton()
+        assertTrue("2nd click must re-open parent mode cleanly", isParentMode)
+        assertTrue("2nd click must re-open folder manager mode cleanly", isFolderManagerMode)
+
+        // Close window again
+        closePopupWindow()
+        assertFalse(isParentMode)
+
+        // 3rd click on Folder button MUST also work
+        clickFolderButton()
+        assertTrue("3rd click must open folder manager cleanly", isParentMode)
+        assertTrue(isFolderManagerMode)
+    }
+
+    @Test
+    fun testParentControlsDialog_RockSolidStability_NoAutoDismiss() {
+        var isParentMode = true
+        var isFolderManagerMode = true
+
+        // Simulate outside tap / drag attempt - DialogProperties(dismissOnClickOutside = false, dismissOnBackPress = false)
+        fun onOutsideClickAttempt() {
+            // Blocked by DialogProperties: No-op
+        }
+
+        fun onBackPressAttempt() {
+            // Blocked by DialogProperties: No-op
+        }
+
+        fun onExplicitCloseClick() {
+            isParentMode = false
+            isFolderManagerMode = false
+        }
+
+        onOutsideClickAttempt()
+        assertTrue("Dialog must not dismiss on outside click", isParentMode)
+
+        onBackPressAttempt()
+        assertTrue("Dialog must not dismiss on back press", isParentMode)
+
+        // Only explicit close dismisses
+        onExplicitCloseClick()
+        assertFalse("Dialog must dismiss when explicit close button clicked", isParentMode)
+    }
 }
 

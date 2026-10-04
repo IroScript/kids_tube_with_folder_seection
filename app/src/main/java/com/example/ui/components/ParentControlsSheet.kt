@@ -54,15 +54,15 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.ModalBottomSheetDefaults
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -126,12 +126,6 @@ fun ParentControlsSheet(
             lazyListState.scrollToItem(0)
         }
     }
-
-    // Disable dragging dismiss and ensure dialog only closes on explicit Cross / Done button click
-    val sheetState = rememberModalBottomSheetState(
-        skipPartiallyExpanded = true,
-        confirmValueChange = { false }
-    )
 
     // Track which folder is awaiting permission re-grant
     var pendingReGrantFolderId by remember { mutableStateOf<String?>(null) }
@@ -202,23 +196,41 @@ fun ParentControlsSheet(
         }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = {
-            // Intentionally empty: Window will NOT dismiss when clicking outside in empty space.
-            // User MUST click the Cross [X] button or the Done button to close.
-        },
-        sheetState = sheetState,
-        properties = ModalBottomSheetDefaults.properties(shouldDismissOnBackPress = false),
-        containerColor = Color(0xFF161824),
-        contentColor = Color.White,
-        dragHandle = null
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false
+        )
     ) {
-        Column(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.95f)
-                .padding(horizontal = 20.dp, vertical = 12.dp)
+                .fillMaxSize()
+                .background(Color(0xCC000000))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) { /* Outside click is blocked - does not dismiss! */ },
+            contentAlignment = Alignment.Center
         ) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = Color(0xFF161824),
+                border = BorderStroke(1.dp, Color(0xFF2B2E42)),
+                modifier = Modifier
+                    .fillMaxWidth(0.96f)
+                    .fillMaxHeight(0.94f)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { /* Consume clicks inside sheet so it doesn't propagate */ }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
+                ) {
             // Top Header with Close (X) Button
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -949,4 +961,6 @@ fun ParentControlsSheet(
             }
         }
     }
+    }
+}
 }
